@@ -89,9 +89,6 @@ int main(int, char**) {
   bool done = false;
 
 
-// ImGuiWindowFlags_NoResize
-// ImGuiWindowFlags_NoMove
-
   static float dt = 0;
   static float ts[100000];
   static float xs[100000];
