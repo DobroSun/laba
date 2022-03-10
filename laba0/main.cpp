@@ -44,6 +44,88 @@ static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
 static IDXGISwapChain*          g_pSwapChain = NULL;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = NULL;
 
+#define max(x, y) ( ((x) > (y)) ? (x) : (y) )
+
+struct Thread_Data {
+  float* ts = NULL;
+  float* xs = NULL;
+  float* ys = NULL; 
+
+  float w1 = 1;
+  float w2 = 1;
+  float d1 = 0;
+  float d2 = 0;
+  int count = 0;
+
+  float dt = 0;
+};
+
+
+static bool show_imgui_demo  = false;
+static bool show_implot_demo = false;
+
+static bool show_laba1 = false;
+static bool show_laba2 = false;
+static bool show_laba3 = false;
+static bool show_laba4 = false;
+
+static bool processing_data = false;
+static bool want_user_confirmation_for_reset = false;
+static bool done = false;
+
+
+static const int NUMBER_OF_POINTS = 1000;
+static float ts[NUMBER_OF_POINTS];
+static float xs[NUMBER_OF_POINTS];
+static float ys[NUMBER_OF_POINTS];
+
+static float o1 = 1;
+static float o2 = 1;
+static float b1 = 0;
+static float b2 = 0;
+
+static Thread_Data thread_data;
+
+static int cursor = 0;
+
+static HANDLE computation_thread = NULL;
+static HANDLE data_mutex         = NULL;
+
+static bool already_computed_some_data() { return thread_data.count != 0; }
+
+static DWORD computation_thread_proc(LPVOID parameter) {
+  Thread_Data* data = (Thread_Data*) parameter;
+
+  float w1 = data->w1;
+  float w2 = data->w2;
+  float d1 = data->d1;
+  float d2 = data->d2;
+  float dt = data->dt;
+
+  float t = 0;
+  while (data->count < NUMBER_OF_POINTS) {
+    float x = sin(w1 * t + d1);
+    float y = sin(w2 * t + d2);
+    int count = data->count;
+
+    {
+      int result = WaitForSingleObject(data_mutex, INFINITE);
+      assert(result == WAIT_OBJECT_0);
+
+      data->ts[count] = t;
+      data->xs[count] = x;
+      data->ys[count] = y;
+      data->count++;
+
+      ReleaseMutex(data_mutex);
+    }
+
+    t += dt;
+  }
+
+  return 0;
+}
+
 
 
 // Main code
@@ -75,37 +157,12 @@ int main(int, char**) {
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
 
+  thread_data.ts = ts;
+  thread_data.xs = xs;
+  thread_data.ys = ys;
+  thread_data.dt = io.DeltaTime;
 
-  bool show_imgui_demo  = false;
-  bool show_implot_demo = false;
-
-  bool show_laba1 = false;
-  bool show_laba2 = false;
-  bool show_laba3 = false;
-  bool show_laba4 = false;
-
-  bool start_processing_data = false;
-  bool want_user_confirmation_for_reset = false;
-  bool done = false;
-
-
-  static float dt = 0;
-  static float ts[100000];
-  static float xs[100000];
-  static float ys[100000];
-  static int count = 0;
-
-  static float w1 = 1;
-  static float w2 = 1;
-  static float d1 = 0;
-  static float d2 = 0;
-
-  float o1 = w1;
-  float o2 = w2;
-  float b1 = d1;
-  float b2 = d2;
-
-
+  data_mutex = CreateMutexA(NULL, false, NULL);
 
 
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -123,6 +180,10 @@ int main(int, char**) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+
+
+  
+    if (processing_data) cursor = max(cursor, thread_data.count);
 
     {
       ImGui::Begin("Control window");
@@ -142,6 +203,8 @@ int main(int, char**) {
         ImGui::InputFloat("delta 1", &b1, step, step_fast, format, flags);
         ImGui::InputFloat("omega 2", &o2, step, step_fast, format, flags);
         ImGui::InputFloat("delta 2", &b2, step, step_fast, format, flags);
+
+        ImGui::SliderInt("My Slider: ", &cursor, 0, thread_data.count);
       }
 
       if (ImGui::CollapsingHeader("Laba 2")) {}
@@ -150,13 +213,26 @@ int main(int, char**) {
 
       if (ImGui::Button("Start")) {
         // If there is no data computed, we want to reset everything automatically without pressing 'Reset' button.
-        if (!count) {
-          w1 = o1;
-          w2 = o2;
-          d1 = b1;
-          d2 = b2;
+        if (!already_computed_some_data()) {
+          thread_data.w1 = o1;
+          thread_data.w2 = o2;
+          thread_data.d1 = b1;
+          thread_data.d2 = b2;
         }
-        start_processing_data = true;
+
+        if (!processing_data) {
+          if (already_computed_some_data()) {
+            // resume thread execution.
+            ResumeThread(computation_thread);
+
+          } else {
+            // destroy current thread if there is one.
+            // and start a new thread.
+            if (computation_thread) TerminateThread(computation_thread, 0);
+            computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
+          }
+        }
+        processing_data = true;
       }
 
       ImGui::SameLine();
@@ -168,7 +244,9 @@ int main(int, char**) {
       ImGui::SameLine();
 
       if (ImGui::Button("Stop")) {
-        start_processing_data = false;
+        // suspend thread execution.
+        SuspendThread(computation_thread);
+        processing_data = false;
       }
 
       auto framerate = io.Framerate;
@@ -184,21 +262,13 @@ int main(int, char**) {
       ImPlot::ShowDemoWindow();
     }
 
-    if (start_processing_data) {
-      dt += io.DeltaTime;
-      ts[count] = dt;
-      xs[count] = sin(w1 * dt + d1);
-      ys[count] = sin(w2 * dt + d2);
-      count++;
-    }
-
     if (show_laba1) {
       if (ImPlot::BeginPlot("Sin")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1,  0.0,  dt, ImGuiCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0, 1.0, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1,  0.0, cursor * thread_data.dt, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0, 1.0,                     ImGuiCond_Always);
 
-        ImPlot::PlotLine("Data 1", ts, xs, count);
-        ImPlot::PlotLine("Data 2", ts, ys, count);
+        ImPlot::PlotLine("Data 1", thread_data.ts, thread_data.xs, cursor);
+        ImPlot::PlotLine("Data 2", thread_data.ts, thread_data.ys, cursor);
         ImPlot::EndPlot();
       }
 
@@ -206,24 +276,30 @@ int main(int, char**) {
         ImPlot::SetupAxisLimits(ImAxis_X1, -1.0, 1.0, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0, 1.0, ImGuiCond_Always);
         
-        ImPlot::PlotLine("Data", xs, ys, count);
+        ImPlot::PlotLine("Data", thread_data.xs, thread_data.ys, cursor);
         ImPlot::EndPlot();
       }
     }
 
     if (want_user_confirmation_for_reset) {
-
-      // If there is some data computed, we want to ask for a permission to reset everything, otherwise just reset everything.
-      if (count) {
+      if (already_computed_some_data()) {
         ImGui::Begin("Are you sure want to reset everything?");
         if (ImGui::Button("Reset")) {
-          w1 = o1;
-          w2 = o2;
-          d1 = b1;
-          d2 = b2;
 
-          dt    = 0;
-          count = 0;
+
+          if (processing_data) {
+            if (computation_thread) TerminateThread(computation_thread, 0);
+          }
+
+          thread_data.w1 = o1;
+          thread_data.w2 = o2;
+          thread_data.d1 = b1;
+          thread_data.d2 = b2;
+          thread_data.count = 0;
+
+          if (processing_data) {
+            computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
+          }
 
           want_user_confirmation_for_reset = false;
         }
@@ -235,13 +311,21 @@ int main(int, char**) {
         }
         ImGui::End();
       } else {
-        w1 = o1;
-        w2 = o2;
-        d1 = b1;
-        d2 = b2;
 
-        dt    = 0;
-        count = 0;
+        if (processing_data) {
+          if (computation_thread) TerminateThread(computation_thread, 0);
+        }
+
+        thread_data.w1 = o1;
+        thread_data.w2 = o2;
+        thread_data.d1 = b1;
+        thread_data.d2 = b2;
+        thread_data.count = 0;
+
+        if (processing_data) {
+          computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
+        }
+
         want_user_confirmation_for_reset = false;
       }
     }
