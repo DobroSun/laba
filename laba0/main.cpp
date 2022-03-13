@@ -55,7 +55,7 @@ struct Thread_Data {
   float w2 = 1;
   float d1 = 0;
   float d2 = 0;
-  int count = 0;
+  unsigned count = 0;
 
   float dt = 0;
 };
@@ -64,17 +64,18 @@ struct Thread_Data {
 static bool show_imgui_demo  = false;
 static bool show_implot_demo = false;
 
-static bool show_laba1 = false;
+static bool show_laba1 = true;
 static bool show_laba2 = false;
 static bool show_laba3 = false;
 static bool show_laba4 = false;
 
+static bool auto_cursor     = true;
 static bool processing_data = false;
 static bool want_user_confirmation_for_reset = false;
-static bool done = false;
+static bool done            = false;
 
 
-static const int NUMBER_OF_POINTS = 1000;
+static const int NUMBER_OF_POINTS = 100000;
 static float ts[NUMBER_OF_POINTS];
 static float xs[NUMBER_OF_POINTS];
 static float ys[NUMBER_OF_POINTS];
@@ -89,7 +90,6 @@ static Thread_Data thread_data;
 static int cursor = 0;
 
 static HANDLE computation_thread = NULL;
-static HANDLE data_mutex         = NULL;
 
 static bool already_computed_some_data() { return thread_data.count != 0; }
 
@@ -106,21 +106,18 @@ static DWORD computation_thread_proc(LPVOID parameter) {
   while (data->count < NUMBER_OF_POINTS) {
     float x = sin(w1 * t + d1);
     float y = sin(w2 * t + d2);
-    int count = data->count;
+    unsigned count = data->count;
 
     {
-      int result = WaitForSingleObject(data_mutex, INFINITE);
-      assert(result == WAIT_OBJECT_0);
-
-      data->ts[count] = t;
-      data->xs[count] = x;
-      data->ys[count] = y;
-      data->count++;
-
-      ReleaseMutex(data_mutex);
+      InterlockedExchange((unsigned*) &data->ts[count], *(unsigned*) &t);
+      InterlockedExchange((unsigned*) &data->xs[count], *(unsigned*) &x);
+      InterlockedExchange((unsigned*) &data->ys[count], *(unsigned*) &y);
+      InterlockedIncrement(&data->count);
     }
 
     t += dt;
+
+    Sleep(20); // @RemoveMe: 
   }
 
   return 0;
@@ -162,8 +159,6 @@ int main(int, char**) {
   thread_data.ys = ys;
   thread_data.dt = io.DeltaTime;
 
-  data_mutex = CreateMutexA(NULL, false, NULL);
-
 
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   while (!done) {
@@ -183,7 +178,7 @@ int main(int, char**) {
 
 
   
-    if (processing_data) cursor = max(cursor, thread_data.count);
+    if (auto_cursor) cursor = max(cursor, thread_data.count);
 
     {
       ImGui::Begin("Control window");
@@ -204,7 +199,8 @@ int main(int, char**) {
         ImGui::InputFloat("omega 2", &o2, step, step_fast, format, flags);
         ImGui::InputFloat("delta 2", &b2, step, step_fast, format, flags);
 
-        ImGui::SliderInt("My Slider: ", &cursor, 0, thread_data.count);
+        ImGui::SliderInt("Time Domain: ", &cursor, 0, thread_data.count);
+        ImGui::Checkbox("Auto Cursor", &auto_cursor);
       }
 
       if (ImGui::CollapsingHeader("Laba 2")) {}
@@ -301,6 +297,7 @@ int main(int, char**) {
             computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
           }
 
+          cursor = 0;
           want_user_confirmation_for_reset = false;
         }
 
@@ -326,6 +323,7 @@ int main(int, char**) {
           computation_thread = CreateThread(NULL, 0, computation_thread_proc, &thread_data, 0, NULL);
         }
 
+        cursor = 0;
         want_user_confirmation_for_reset = false;
       }
     }
