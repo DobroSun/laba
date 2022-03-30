@@ -1,0 +1,10 @@
+*.exe
+*.ilk
+*.obj
+*.pdb
+*.swp
+*.json
+*.vs
+*.vcxproj*
+
+x64/
