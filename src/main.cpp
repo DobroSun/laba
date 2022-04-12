@@ -318,7 +318,7 @@ int main(int, char**) {
       ImGui::Checkbox("ImGui Demo", &show_imgui_demo);
       ImGui::Checkbox("ImPlot Demo", &show_implot_demo);
 
-      if (ImGui::CollapsingHeader("Laba 1")) {
+      if (ImGui::CollapsingHeader("Laba 1"), ImGuiTreeNodeFlags_DefaultOpen) {
         ImGui::Checkbox("Show", &show_laba1);
 
         static const float step      = 0.0f;
