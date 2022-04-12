@@ -224,13 +224,14 @@ static int computation_thread_proc(void* param) {
         goto end;
       }
 
-      printf("Computed Layer: %d\n", i);
       InterlockedExchange64((int64*) (ts + idn), *(int64*) &t);
       InterlockedExchange64((int64*) (xs + idn), *(int64*) &x);
       InterlockedExchange64((int64*) (rs + idn), *(int64*) &r);
       InterlockedExchange64((int64*) (us + idn), *(int64*) &u);
       InterlockedExchange64((int64*) (ps + idn), *(int64*) &p);
     }
+
+    printf("Computed Layer: %d\n", i);
     i++;
   }
   
@@ -352,6 +353,7 @@ int main(int, char**) {
           size_t min_time = min(NUMBER_OF_POINTS_IN_TIME, MEMORY_ALLOCATED / NUMBER_OF_POINTS_IN_X);
           ImGui::SliderInt("Time", &cursor, 0, min_time-1);
 
+          InterlockedExchange((uint*) &thread_data.tmax, *(uint*) &tmax);
           InterlockedExchange((uint*) &thread_data.xmin, *(uint*) &xmin);
           InterlockedExchange((uint*) &thread_data.xmax, *(uint*) &xmax);
           InterlockedExchange((uint*) &thread_data.p0,   *(uint*) &p0);
