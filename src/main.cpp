@@ -90,7 +90,6 @@ double u_x0(double t) {
 }
 
 struct Thread_Data {
-  float tmax = 0.0f;
   float xmin = 0.0f;
   float xmax = 0.0f;
 
@@ -135,7 +134,6 @@ static int computation_thread_proc(void* param) {
 
   float xmin = data.xmin; 
   float xmax = data.xmax;
-  float tmax = data.tmax;
   float p0   = data.p0;
   float x0   = data.x0;
   float r0   = data.r0;
@@ -146,98 +144,91 @@ static int computation_thread_proc(void* param) {
 
   size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
 
-  // create a grid.
+  double t = 0.0; // real time.
+
   {
-    Scoped_Lock mutex(&data_mutex);
-    array_reserve(&result.grid, NUMBER_OF_POINTS_IN_X);
-    array_reserve(&result.data, NUMBER_OF_POINTS_IN_X);
-  }
-
-  for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
-    double x = xmin + i*dx;
-
-    Scoped_Lock mutex(&data_mutex);
-    array_add(&result.grid, x);
-  }
-
-  double t = 0;
-
-  // 
-  // apply initial conditions on t=0
-  //
-  for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++)  {
-    double x = result.grid[j];
-    double r = ro_t0(x, ro0);
-    double u =  u_t0(x);
-    double p =  p_t0(x, p0, x0, r0);
-
-    Vertex v;
-    v.t = t;
-    v.r = r;
-    v.u = u;
-    v.p = p;
+    // 
+    // create a grid.
+    //
+    double* grid = (double*) alloca(sizeof(double) * NUMBER_OF_POINTS_IN_X);
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+      grid[i] = xmin + i*dx;
+    }
 
     {
-      Scoped_Lock mutex(&data_mutex);
-      array_add(&result.data, v);
+      Scoped_Lock lock(&data_mutex);
+      result.grid = array_copy(grid, NUMBER_OF_POINTS_IN_X);
     }
   }
+  {
+    // 
+    // apply initial conditions on t=0
+    //
+    Vertex* data = (Vertex*) alloca(sizeof(Vertex) * NUMBER_OF_POINTS_IN_X);
+    for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++)  {
+      double x = result.grid[j];
+
+      Vertex* v = &data[j];
+      v->t = t;
+      v->r = ro_t0(x, ro0);
+      v->u =  u_t0(x);
+      v->p =  p_t0(x, p0, x0, r0);
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      array_add(&result.data, data, NUMBER_OF_POINTS_IN_X);
+    }
+  }
+
+  Vertex* solution = (Vertex*) alloca(sizeof(Vertex) * NUMBER_OF_POINTS_IN_X);
 
   size_t i = 0;
   while (1) {
     i++;
     t += dt;
 
-    // boundary conditions.
-    double r = 0;
-    double u = u_x0(t);
-    double p = 0;
+    for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++) {
+      if (j == 0 || j == NUMBER_OF_POINTS_IN_X-1) {
+        // 
+        // boundary conditions.
+        //
+        Vertex* v = &solution[j];
+        v->t = t;
+        v->r = 0; // @Incomplete: 
+        v->u = u_x0(t);
+        v->p = 0; // @Incomplete: 
 
-    Vertex v;
-    v.t = t;
-    v.r = r;
-    v.u = u;
-    v.p = p;
+      } else {
+        // 
+        // internal points.
+        //
+        Vertex curr = get_data(&result, i-1, j);
+        Vertex prev = get_data(&result, i-1, j-1);
+        Vertex next = get_data(&result, i-1, j+1);
 
-    { 
-      Scoped_Lock mutex(&data_mutex);
-      array_add(&result.data, v);
-    }
+        double x = result.grid[j];
 
+        Vertex* v = &solution[j];
+        v->t = t;
+        v->r = 1/2.0f * (next.r + prev.r) - curr.u * dt / (2.0f * dx) * (next.r - prev.r) - dt / (2.0f * dx) * curr.r * (next.u - prev.u);
+        v->u = 1/2.0f * (next.u + prev.u) - curr.u * dt / (2.0f * dx) * (next.u - prev.u) - dt / (2.0f * dx) / curr.r * (next.p - prev.p);
+        v->p = 1/2.0f * (next.p + prev.p) - curr.u * dt / (2.0f * dx) * (next.p - prev.p) - dt / (2.0f * dx) * gamma * curr.p * (next.u - prev.u);
 
-    for (size_t j = 1; j < NUMBER_OF_POINTS_IN_X-1; j++)  {
-      Vertex curr = get_data(&result, i-1, j);
-      Vertex prev = get_data(&result, i-1, j-1);
-      Vertex next = get_data(&result, i-1, j+1);
-
-      double x = result.grid[j];
-      double r = 1/2.0f * (next.r + prev.r) - curr.u * dt / (2.0f * dx) * (next.r - prev.r) - dt / (2.0f * dx) * curr.r * (next.u - prev.u);
-      double u = 1/2.0f * (next.u + prev.u) - curr.u * dt / (2.0f * dx) * (next.u - prev.u) - dt / (2.0f * dx) / curr.r * (next.p - prev.p);
-      double p = 1/2.0f * (next.p + prev.p) - curr.u * dt / (2.0f * dx) * (next.p - prev.p) - dt / (2.0f * dx) * gamma * curr.p * (next.u - prev.u);
-
-      // Courant–Friedrichs–Lewy condition:
-      double frac = dx / (abs(curr.u) + sqrt(gamma * curr.p / curr.r));
-      if (dt > frac) {
-        printf("Exiting the loop on %d layer!\n", i);
-        goto end;
+        // Courant–Friedrichs–Lewy condition:
+        double frac = dx / (abs(curr.u) + sqrt(gamma * curr.p / curr.r));
+        if (dt > frac) {
+          printf("Exiting the loop on %d layer!\n", i);
+          goto end;
+        }
       }
-
-      Vertex v;
-      v.t = t;
-      v.r = r;
-      v.u = u;
-      v.p = p;
-
-      Scoped_Lock mutex(&data_mutex);
-      array_add(&result.data, v);
     }
 
-    { 
-      Scoped_Lock mutex(&data_mutex);
-      array_add(&result.data, v);
+    {
+      Scoped_Lock lock(&data_mutex);
+      array_add(&result.data, solution, NUMBER_OF_POINTS_IN_X);
     }
   }
-  
 end:
   return 0;
 }
@@ -292,7 +283,6 @@ int main(int, char**) {
   Thread_Data thread_data   = {};
 
   InputFloatSettings input_parameters_laba1[] = {
-    { "tmax", &thread_data.tmax },
     { "xmin", &thread_data.xmin },
     { "xmax", &thread_data.xmax },
     { "p0",   &thread_data.p0 },
@@ -306,7 +296,6 @@ int main(int, char**) {
   InputFloatSettings input_parameters_laba2 = {};
 
   { // default parameters.
-    thread_data.tmax = 2.0f;
     thread_data.xmin = -1.0f;
     thread_data.xmax = 1.0f;
     thread_data.p0   = 1.0f;
@@ -399,7 +388,7 @@ int main(int, char**) {
       }
       ImGui::SameLine();
       if (ImGui::Button("Pause")) {
-        if (is_thread_running(&computation_thread)) {
+        if (!thread_is_paused && is_thread_running(&computation_thread)) {
           suspend_thread(&computation_thread);
           thread_is_paused = true;
         }

@@ -1,6 +1,7 @@
 #pragma once
 
 #define GROW_FUNCTION(x) (2*(x) + 8)
+#define max(x, y) ( ((x) > (y)) ? (x) : (y) )
 
 
 template<class T>
@@ -48,6 +49,16 @@ T* array_add(array<T>* a) {
 template<class T, class U>
 T* array_add(array<T>* a, U v) {
   return &(*array_add(a) = v);
+}
+
+template<class T>
+void array_add(array<T>* a, const T* data, size_t size) {
+  if (a->size + size > a->capacity) {
+    size_t new_capacity = max(GROW_FUNCTION(a->capacity), a->size+size);
+    array_reserve(a, new_capacity);
+  }
+  memcpy(a->data + a->size, data, sizeof(T) * size);
+  a->size += size;
 }
 
 template<class T>
@@ -99,7 +110,17 @@ array<T> array_copy(const array<T>* b) {
 }
 
 template<class T>
+array<T> array_copy(const T* data, size_t size) {
+  array<T> b;
+  b.data = (T*) data;
+  b.size = size;
+  b.capacity = size;
+  return array_copy(&b);
+}
+
+template<class T>
 void array_copy_range(array<T>* a, const array<T>* b, size_t first, size_t last) {
+  // @Incomplete: array bound checks?
   size_t size = last - first;
   array_resize(a, size);
   memcpy(a->data, &b->data[first], sizeof(T) * size);
@@ -113,5 +134,6 @@ void array_free(array<T>* a) {
   a->capacity = 0;
 }
 
+#undef max
 #undef GROW_FUNCTION
 
