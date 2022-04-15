@@ -93,9 +93,9 @@ struct Thread_Data {
   float xmin = 0.0f;
   float xmax = 0.0f;
 
-  float p0 = 0.0f;
-  float x0 = 0.0f;
-  float r0 = 0.0f;
+  float p0  = 0.0f;
+  float x0  = 0.0f;
+  float r0  = 0.0f;
   float ro0 = 0.0f;
   float gamma = 0.0f;
 
@@ -103,15 +103,6 @@ struct Thread_Data {
   float dx = 0.0f;
 };
 
-
-static bool show_imgui_demo  = false;
-static bool show_implot_demo = false;
-static bool show_laba1       = true;
-static bool show_laba2       = false;
-static bool show_laba3       = false;
-
-static bool done             = false;
-static bool thread_is_paused = false;
 
 struct Vertex {
   double t;
@@ -132,10 +123,6 @@ Vertex get_data(Result* r, size_t t, size_t j) {
 static Result result;
 static Mutex data_mutex;
 
-static int cursor = 0;
-
-static Thread computation_thread = {};
-static Thread_Data thread_data   = {};
 
 static int computation_thread_proc(void* param) {
   Thread_Data data = *(Thread_Data*) param; // copy
@@ -192,7 +179,6 @@ static int computation_thread_proc(void* param) {
 
   size_t i = 0;
   while (1) {
-
     i++;
     t += dt;
 
@@ -218,7 +204,7 @@ static int computation_thread_proc(void* param) {
       Vertex prev = get_data(&result, i-1, j-1);
       Vertex next = get_data(&result, i-1, j+1);
 
-      double x = xmin + (j * dx);
+      double x = result.grid[j];
       double r = 1/2.0f * (next.r + prev.r) - curr.u * dt / (2.0f * dx) * (next.r - prev.r) - dt / (2.0f * dx) * curr.r * (next.u - prev.u);
       double u = 1/2.0f * (next.u + prev.u) - curr.u * dt / (2.0f * dx) * (next.u - prev.u) - dt / (2.0f * dx) / curr.r * (next.p - prev.p);
       double p = 1/2.0f * (next.p + prev.p) - curr.u * dt / (2.0f * dx) * (next.p - prev.p) - dt / (2.0f * dx) * gamma * curr.p * (next.u - prev.u);
@@ -226,10 +212,9 @@ static int computation_thread_proc(void* param) {
       // Courant–Friedrichs–Lewy condition:
       double frac = dx / (abs(curr.u) + sqrt(gamma * curr.p / curr.r));
       if (dt > frac) {
-        printf("Exiting the loop on %d layer!\n", t / dt);
+        printf("Exiting the loop on %d layer!\n", i);
         goto end;
       }
-
 
       Vertex v;
       v.t = t;
@@ -245,8 +230,6 @@ static int computation_thread_proc(void* param) {
       Scoped_Lock mutex(&data_mutex);
       array_add(&result.data, v);
     }
-
-    printf("Computed Layer: %zu\n", t / dt);
   }
   
 end:
@@ -255,30 +238,30 @@ end:
 
 
 
-void init_program() {
+void init_program(Thread_Data* thread_data) {
   init_threads_api();
   check_threads_api();
 
   {
-    thread_data.xmin = -1.0f;
-    thread_data.xmax = 1.0f;
-    thread_data.tmax = 2.0f;
-
-    thread_data.p0 = 1.0f;
-    thread_data.x0 = 0.0f;
-    thread_data.r0 = 1.0f;
-    thread_data.ro0 = 1.0f;
-    thread_data.gamma = 1.67f;
-
-    thread_data.dt = 0.0001f;
-    thread_data.dx = 0.01f;
+    thread_data->xmin = -1.0f;
+    thread_data->xmax = 1.0f;
+    thread_data->tmax = 2.0f;
+    thread_data->p0   = 1.0f;
+    thread_data->x0   = 0.0f;
+    thread_data->r0   = 1.0f;
+    thread_data->ro0  = 1.0f;
+    thread_data->gamma = 1.67f;
+    thread_data->dt   = 0.0001f;
+    thread_data->dx   = 0.01f;
   }
 
-  create_mutex(&data_mutex);
+  data_mutex = create_mutex();
 }
 
 // Main code
 int main(int, char**) {
+
+
   WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
   ::RegisterClassEx(&wc);
   HWND hwnd = ::CreateWindow(wc.lpszClassName, _T("Dear ImGui DirectX11 Example"), WS_OVERLAPPEDWINDOW ^ WS_THICKFRAME, 100, 100, 1280, 800, NULL, NULL, wc.hInstance, NULL);
@@ -305,8 +288,21 @@ int main(int, char**) {
   ImGui_ImplWin32_Init(hwnd);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
+  bool show_imgui_demo  = false;
+  bool show_implot_demo = false;
+  bool show_laba1       = true;
+  bool show_laba2       = false;
+  bool show_laba3       = false;
 
-  init_program();
+  bool done             = false;
+  bool thread_is_paused = false;
+
+  int cursor = 0;
+
+  Thread computation_thread = {};
+  Thread_Data thread_data   = {};
+
+  init_program(&thread_data);
 
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   while (!done) {
@@ -343,16 +339,11 @@ int main(int, char**) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    size_t NUMBER_OF_POINTS_IN_X    = (thread_data.xmax - thread_data.xmin) / thread_data.dx;
-    size_t NUMBER_OF_POINTS_IN_TIME =                    (thread_data.tmax) / thread_data.dt;
-
-
     {
       ImGui::Begin("Control window");
 
       ImGui::Checkbox("ImGui Demo",   &show_imgui_demo);
       ImGui::Checkbox("ImPlot Demo",  &show_implot_demo);
-      ImGui::Checkbox("Do The Thing", &do_the_thing);
 
       if (ImGui::CollapsingHeader("Laba 1"), ImGuiTreeNodeFlags_DefaultOpen) {
         ImGui::Checkbox("Show", &show_laba1);
@@ -362,47 +353,23 @@ int main(int, char**) {
         static const char* format    = "%.4f";
         static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
 
+        ImGui::InputFloat("tmax", &thread_data.tmax, step, step_fast, format, flags);
+        ImGui::InputFloat("xmin", &thread_data.xmin, step, step_fast, format, flags);
+        ImGui::InputFloat("xmax", &thread_data.xmax, step, step_fast, format, flags);
+        ImGui::InputFloat("p0",   &thread_data.p0,   step, step_fast, format, flags);
+        ImGui::InputFloat("x0",   &thread_data.x0,   step, step_fast, format, flags);
+        ImGui::InputFloat("r0",   &thread_data.r0,   step, step_fast, format, flags);
+        ImGui::InputFloat("ro0",  &thread_data.ro0,  step, step_fast, format, flags);
+        ImGui::InputFloat("gamma", &thread_data.gamma, step, step_fast, format, flags);
+        ImGui::InputFloat("dx",   &thread_data.dx,   step, step_fast, format, flags);
+        ImGui::InputFloat("dt",   &thread_data.dt,   step, step_fast, format, flags);
+
+        size_t max_time = cursor;
         {
-          float tmax = thread_data.tmax;
-          float xmin = thread_data.xmin;
-          float xmax = thread_data.xmax;
-          float p0 = thread_data.p0;
-          float x0 = thread_data.x0;
-          float r0 = thread_data.r0;
-          float ro0 = thread_data.ro0;
-          float gamma = thread_data.gamma;
-          float dx = thread_data.dx;
-          float dt = thread_data.dt;
-
-          ImGui::InputFloat("tmax", &tmax, step, step_fast, format, flags);
-          ImGui::InputFloat("xmin", &xmin, step, step_fast, format, flags);
-          ImGui::InputFloat("xmax", &xmax, step, step_fast, format, flags);
-          ImGui::InputFloat("p0",   &p0,   step, step_fast, format, flags);
-          ImGui::InputFloat("x0",   &x0,   step, step_fast, format, flags);
-          ImGui::InputFloat("r0",   &r0,   step, step_fast, format, flags);
-          ImGui::InputFloat("ro0",  &ro0,  step, step_fast, format, flags);
-          ImGui::InputFloat("gamma", &gamma, step, step_fast, format, flags);
-          ImGui::InputFloat("dx", &dx,     step, step_fast, format, flags);
-          ImGui::InputFloat("dt", &dt,     step, step_fast, format, flags);
-
-          size_t max_time = cursor;
-          {
-            Scoped_Lock mutex(&data_mutex);
-            max_time = (result.grid.size) ? result.data.size / result.grid.size : 0;
-          }
-          ImGui::SliderInt("Time", &cursor, 0, max_time-1);
-
-          InterlockedExchange((uint*) &thread_data.tmax, *(uint*) &tmax);
-          InterlockedExchange((uint*) &thread_data.xmin, *(uint*) &xmin);
-          InterlockedExchange((uint*) &thread_data.xmax, *(uint*) &xmax);
-          InterlockedExchange((uint*) &thread_data.p0,   *(uint*) &p0);
-          InterlockedExchange((uint*) &thread_data.x0,   *(uint*) &x0);
-          InterlockedExchange((uint*) &thread_data.r0,   *(uint*) &r0);
-          InterlockedExchange((uint*) &thread_data.ro0,  *(uint*) &ro0);
-          InterlockedExchange((uint*) &thread_data.gamma, *(uint*) &gamma);
-          InterlockedExchange((uint*) &thread_data.dx,   *(uint*) &dx);
-          InterlockedExchange((uint*) &thread_data.dt,   *(uint*) &dt);
+          Scoped_Lock mutex(&data_mutex);
+          max_time = (result.grid.size) ? result.data.size / result.grid.size : 0;
         }
+        ImGui::SliderInt("Time", &cursor, 0, max_time-1);
       }
 
       if (ImGui::CollapsingHeader("Laba 2")) {}

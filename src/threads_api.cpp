@@ -16,9 +16,9 @@ bool (*kill_thread)(Thread*);
 void check_threads_api();
 void init_threads_api();
 
-bool (*create_mutex)(Mutex*);
-bool (*lock_mutex)(Mutex*);
-bool (*release_mutex)(Mutex*);
+Mutex (*create_mutex)();
+bool  (*lock_mutex)(Mutex*);
+bool  (*release_mutex)(Mutex*);
 
 struct Scoped_Lock {
   Mutex* mutex;

@@ -47,10 +47,11 @@ bool kill_thread_windows(Thread* thread) {
   return TerminateThread(t->handle, 0);
 }
 
-bool create_mutex_windows(Mutex* mutex) {
-  Mutex_Windows* m = (Mutex_Windows*) mutex;
+Mutex create_mutex_windows() {
+  Mutex r;
+  Mutex_Windows* m = (Mutex_Windows*) &r;
   m->handle = CreateMutex(NULL, false, NULL);
-  return m->handle;
+  return r;
 }
 
 bool lock_mutex_windows(Mutex* mutex) {
