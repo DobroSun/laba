@@ -5,6 +5,10 @@ struct Thread_Windows {
   void* thread_data;
 };
 
+struct Mutex_Windows {
+  HANDLE handle;
+};
+
 bool start_thread_windows(Thread* thread, int (*proc)(void*), void* data) {
   Thread_Windows* t = (Thread_Windows*) thread;
 
@@ -43,12 +47,32 @@ bool kill_thread_windows(Thread* thread) {
   return TerminateThread(t->handle, 0);
 }
 
+bool create_mutex_windows(Mutex* mutex) {
+  Mutex_Windows* m = (Mutex_Windows*) mutex;
+  m->handle = CreateMutex(NULL, false, NULL);
+  return m->handle;
+}
+
+bool lock_mutex_windows(Mutex* mutex) {
+  Mutex_Windows* m = (Mutex_Windows*) mutex;
+  int result = WaitForSingleObject(m->handle, INFINITE);
+  return result == WAIT_OBJECT_0;
+}
+
+bool release_mutex_windows(Mutex* mutex) {
+  Mutex_Windows* m = (Mutex_Windows*) mutex;
+  return ReleaseMutex(m->handle);
+}
+
 void check_threads_api() {
   assert(is_thread_running);
   assert(start_thread);
   assert(suspend_thread);
   assert(resume_thread);
   assert(kill_thread);
+  assert(create_mutex);
+  assert(lock_mutex);
+  assert(release_mutex);
 }
 
 void init_threads_api() {
@@ -57,4 +81,7 @@ void init_threads_api() {
   suspend_thread = suspend_thread_windows;
   resume_thread  = resume_thread_windows;
   kill_thread    = kill_thread_windows;
+  create_mutex   = create_mutex_windows;
+  lock_mutex     = lock_mutex_windows;
+  release_mutex  = release_mutex_windows;
 }

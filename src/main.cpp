@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "array.cpp"
 #include "threads_api.cpp"
 #include "threads_windows.cpp"
 
@@ -109,18 +110,29 @@ static bool show_laba1       = true;
 static bool show_laba2       = false;
 static bool show_laba3       = false;
 
-static bool done            = false;
+static bool done             = false;
 static bool thread_is_paused = false;
 
-static const int MEMORY_ALLOCATED = 100000;
-static double ts[MEMORY_ALLOCATED];
-static double xs[MEMORY_ALLOCATED];
-static double rs[MEMORY_ALLOCATED];
-static double us[MEMORY_ALLOCATED];
-static double ps[MEMORY_ALLOCATED];
+struct Vertex {
+  double t;
+  double r;
+  double u;
+  double p;
+};
 
-static float time_domain = 0.0f;
-static int   cursor = 0;
+struct Result {
+  array<double> grid; // for now we only have 1 dimension.
+  array<Vertex> data; // this is going to evolve in time. size := NUMBER_OF_LAYERS * grid.size()
+};
+
+Vertex get_data(Result* r, size_t t, size_t j) {
+  return r->data[t * r->grid.size + j];
+}
+
+static Result result;
+static Mutex data_mutex;
+
+static int cursor = 0;
 
 static Thread computation_thread = {};
 static Thread_Data thread_data   = {};
@@ -139,100 +151,102 @@ static int computation_thread_proc(void* param) {
   float dt   = data.dt;
   float dx   = data.dx;
 
-  size_t NUMBER_OF_POINTS_IN_X    = (xmax - xmin) / dx;
-  size_t NUMBER_OF_POINTS_IN_TIME =        (tmax) / dt;
-  NUMBER_OF_POINTS_IN_TIME = min(NUMBER_OF_POINTS_IN_TIME, MEMORY_ALLOCATED / NUMBER_OF_POINTS_IN_X);
+  size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
 
-  printf("Can fit: %d layers!\n", MEMORY_ALLOCATED / NUMBER_OF_POINTS_IN_X);
+  // create a grid.
+  {
+    Scoped_Lock mutex(&data_mutex);
+    array_reserve(&result.grid, NUMBER_OF_POINTS_IN_X);
+    array_reserve(&result.data, NUMBER_OF_POINTS_IN_X);
+  }
+
+  for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+    double x = xmin + i*dx;
+
+    Scoped_Lock mutex(&data_mutex);
+    array_add(&result.grid, x);
+  }
+
+  double t = 0;
 
   // 
   // apply initial conditions on t=0
   //
-  size_t i = 0;
   for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++)  {
-    size_t idn = j;
-
-    double t = dt;
-    double x = xmin + (j * dx);
+    double x = result.grid[j];
     double r = ro_t0(x, ro0);
     double u =  u_t0(x);
     double p =  p_t0(x, p0, x0, r0);
 
-    assert(x < xmax);
-    assert(x < NUMBER_OF_POINTS_IN_X    * dx);
-    assert(t < NUMBER_OF_POINTS_IN_TIME * dt);
+    Vertex v;
+    v.t = t;
+    v.r = r;
+    v.u = u;
+    v.p = p;
 
-    InterlockedExchange64((int64*) (ts + idn), *(int64*) &t);
-    InterlockedExchange64((int64*) (xs + idn), *(int64*) &x);
-    InterlockedExchange64((int64*) (rs + idn), *(int64*) &r);
-    InterlockedExchange64((int64*) (us + idn), *(int64*) &u);
-    InterlockedExchange64((int64*) (ps + idn), *(int64*) &p);
+    {
+      Scoped_Lock mutex(&data_mutex);
+      array_add(&result.data, v);
+    }
   }
-  i++;
 
-  // 
-  // apply initial conditions on x=xmin, x=xmax
-  //
-  for (size_t i = 1; i < NUMBER_OF_POINTS_IN_TIME-1; i++)  {
-    size_t idx_min = i*NUMBER_OF_POINTS_IN_X + 0;
-    size_t idx_max = i*NUMBER_OF_POINTS_IN_X + (NUMBER_OF_POINTS_IN_X-1);
+  size_t i = 0;
+  while (1) {
 
-    double xmi = xmin + (0 * dx);
-    double xma = xmin + ((NUMBER_OF_POINTS_IN_X-1) * dx);
-    double t = 0 + (i * dt);
+    i++;
+    t += dt;
+
+    // boundary conditions.
     double r = 0;
     double u = u_x0(t);
     double p = 0;
 
-    assert(t < NUMBER_OF_POINTS_IN_TIME * dt);
+    Vertex v;
+    v.t = t;
+    v.r = r;
+    v.u = u;
+    v.p = p;
 
-    InterlockedExchange64((int64*) (ts + idx_min), *(int64*) &t);
-    InterlockedExchange64((int64*) (xs + idx_min), *(int64*) &xmi);
-    InterlockedExchange64((int64*) (rs + idx_min), *(int64*) &r);
-    InterlockedExchange64((int64*) (us + idx_min), *(int64*) &u);
-    InterlockedExchange64((int64*) (ps + idx_min), *(int64*) &p);
-
-    InterlockedExchange64((int64*) (ts + idx_max), *(int64*) &t);
-    InterlockedExchange64((int64*) (xs + idx_max), *(int64*) &xma);
-    InterlockedExchange64((int64*) (rs + idx_max), *(int64*) &r);
-    InterlockedExchange64((int64*) (us + idx_max), *(int64*) &u);
-    InterlockedExchange64((int64*) (ps + idx_max), *(int64*) &p);
-  }
+    { 
+      Scoped_Lock mutex(&data_mutex);
+      array_add(&result.data, v);
+    }
 
 
-  while (1) {
-    if ((i+1)*NUMBER_OF_POINTS_IN_X >= MEMORY_ALLOCATED) break;
-
-    // @Copy&Paste: from above.
     for (size_t j = 1; j < NUMBER_OF_POINTS_IN_X-1; j++)  {
-      size_t idp = (i-1)*NUMBER_OF_POINTS_IN_X + j;
-      size_t idn = (i-0)*NUMBER_OF_POINTS_IN_X + j;
+      Vertex curr = get_data(&result, i-1, j);
+      Vertex prev = get_data(&result, i-1, j-1);
+      Vertex next = get_data(&result, i-1, j+1);
 
-      double t = 0    + (i * dt);
       double x = xmin + (j * dx);
-      double r = 1/2.0f * (rs[idp+1] + rs[idp-1]) - us[idp] * dt / (2.0f * dx) * (rs[idp+1] - rs[idp-1]) - dt / (2.0f * dx) * rs[idp] * (us[idp+1] - us[idp-1]);
-      double u = 1/2.0f * (us[idp+1] + us[idp-1]) - us[idp] * dt / (2.0f * dx) * (us[idp+1] - us[idp-1]) - dt / (2.0f * dx) / rs[idp] * (ps[idp+1] - ps[idp-1]);
-      double p = 1/2.0f * (ps[idp+1] + ps[idp-1]) - us[idp] * dt / (2.0f * dx) * (ps[idp+1] - ps[idp-1]) - dt / (2.0f * dx) * gamma * ps[idp] * (us[idp+1] - us[idp-1]);
-      assert(x < xmax);
-      assert(x < NUMBER_OF_POINTS_IN_X    * dx);
-      assert(t < NUMBER_OF_POINTS_IN_TIME * dt);
+      double r = 1/2.0f * (next.r + prev.r) - curr.u * dt / (2.0f * dx) * (next.r - prev.r) - dt / (2.0f * dx) * curr.r * (next.u - prev.u);
+      double u = 1/2.0f * (next.u + prev.u) - curr.u * dt / (2.0f * dx) * (next.u - prev.u) - dt / (2.0f * dx) / curr.r * (next.p - prev.p);
+      double p = 1/2.0f * (next.p + prev.p) - curr.u * dt / (2.0f * dx) * (next.p - prev.p) - dt / (2.0f * dx) * gamma * curr.p * (next.u - prev.u);
 
       // Courant–Friedrichs–Lewy condition:
-      double frac = dx / (abs(us[idp]) + sqrt(gamma * ps[idp] / rs[idp]));
+      double frac = dx / (abs(curr.u) + sqrt(gamma * curr.p / curr.r));
       if (dt > frac) {
-        printf("Exiting the loop on %d layer!\n", i);
+        printf("Exiting the loop on %d layer!\n", t / dt);
         goto end;
       }
 
-      InterlockedExchange64((int64*) (ts + idn), *(int64*) &t);
-      InterlockedExchange64((int64*) (xs + idn), *(int64*) &x);
-      InterlockedExchange64((int64*) (rs + idn), *(int64*) &r);
-      InterlockedExchange64((int64*) (us + idn), *(int64*) &u);
-      InterlockedExchange64((int64*) (ps + idn), *(int64*) &p);
+
+      Vertex v;
+      v.t = t;
+      v.r = r;
+      v.u = u;
+      v.p = p;
+
+      Scoped_Lock mutex(&data_mutex);
+      array_add(&result.data, v);
     }
 
-    printf("Computed Layer: %d\n", i);
-    i++;
+    { 
+      Scoped_Lock mutex(&data_mutex);
+      array_add(&result.data, v);
+    }
+
+    printf("Computed Layer: %zu\n", t / dt);
   }
   
 end:
@@ -259,6 +273,8 @@ void init_program() {
     thread_data.dt = 0.0001f;
     thread_data.dx = 0.01f;
   }
+
+  create_mutex(&data_mutex);
 }
 
 // Main code
@@ -303,6 +319,25 @@ int main(int, char**) {
     if (done) { break; }
         
 
+    array<double> grid_to_be_drawn_this_frame;
+    array<Vertex> data_to_be_drawn_this_frame;
+    {
+      Scoped_Lock mutex(&data_mutex);
+
+      size_t needed_data_start =  cursor    * result.grid.size;
+      size_t needed_data_end   = (cursor+1) * result.grid.size;
+
+      if (needed_data_end > result.data.size) {
+        // clamp!
+        needed_data_end   = result.data.size;
+        needed_data_start = needed_data_end - result.grid.size;
+      }
+
+      array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
+      array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
+    }
+
+
     // Start the Dear ImGui frame
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -315,8 +350,9 @@ int main(int, char**) {
     {
       ImGui::Begin("Control window");
 
-      ImGui::Checkbox("ImGui Demo", &show_imgui_demo);
-      ImGui::Checkbox("ImPlot Demo", &show_implot_demo);
+      ImGui::Checkbox("ImGui Demo",   &show_imgui_demo);
+      ImGui::Checkbox("ImPlot Demo",  &show_implot_demo);
+      ImGui::Checkbox("Do The Thing", &do_the_thing);
 
       if (ImGui::CollapsingHeader("Laba 1"), ImGuiTreeNodeFlags_DefaultOpen) {
         ImGui::Checkbox("Show", &show_laba1);
@@ -349,9 +385,12 @@ int main(int, char**) {
           ImGui::InputFloat("dx", &dx,     step, step_fast, format, flags);
           ImGui::InputFloat("dt", &dt,     step, step_fast, format, flags);
 
-          //ImGui::SliderFloat("Time", &time_domain, 0.0f, thread_data.tmax);
-          size_t min_time = min(NUMBER_OF_POINTS_IN_TIME, MEMORY_ALLOCATED / NUMBER_OF_POINTS_IN_X);
-          ImGui::SliderInt("Time", &cursor, 0, min_time-1);
+          size_t max_time = cursor;
+          {
+            Scoped_Lock mutex(&data_mutex);
+            max_time = (result.grid.size) ? result.data.size / result.grid.size : 0;
+          }
+          ImGui::SliderInt("Time", &cursor, 0, max_time-1);
 
           InterlockedExchange((uint*) &thread_data.tmax, *(uint*) &tmax);
           InterlockedExchange((uint*) &thread_data.xmin, *(uint*) &xmin);
@@ -408,14 +447,46 @@ int main(int, char**) {
       ImPlot::ShowDemoWindow();
     }
 
+    array<double> p_array;
+    array_resize(&p_array, data_to_be_drawn_this_frame.size);
+    for (size_t i = 0; i < data_to_be_drawn_this_frame.size; i++) {
+      p_array[i] = data_to_be_drawn_this_frame[i].p;
+    }
+
+    array<double> u_array;
+    array_resize(&u_array, data_to_be_drawn_this_frame.size);
+    for (size_t i = 0; i < data_to_be_drawn_this_frame.size; i++) {
+      u_array[i] = data_to_be_drawn_this_frame[i].u;
+    }
+
+    array<double> r_array;
+    array_resize(&r_array, data_to_be_drawn_this_frame.size);
+    for (size_t i = 0; i < data_to_be_drawn_this_frame.size; i++) {
+      r_array[i] = data_to_be_drawn_this_frame[i].r;
+    }
+
     if (show_laba1) {
-      if (ImPlot::BeginPlot("The Plot")) {
+#if 1
+      if (ImPlot::BeginPlot("Davlenie")) {
         ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1,  0.0, 1.0,                          ImGuiCond_Always);
-
-        ImPlot::PlotLine("p(x)", xs + cursor*NUMBER_OF_POINTS_IN_X, ps + cursor*NUMBER_OF_POINTS_IN_X, NUMBER_OF_POINTS_IN_X);
+        ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
         ImPlot::EndPlot();
       }
+      if (ImPlot::BeginPlot("Velocity")) {
+        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0, 1.0,                          ImGuiCond_Always);
+        ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
+        ImPlot::EndPlot();
+      }
+
+      if (ImPlot::BeginPlot("Ro")) {
+        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0,                           ImGuiCond_Always);
+        ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
+        ImPlot::EndPlot();
+      }
+#endif
     }
 
 
