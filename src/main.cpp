@@ -61,6 +61,7 @@ static ID3D11RenderTargetView*  g_mainRenderTargetView = NULL;
 #define max(x, y) ( ((x) > (y)) ? (x) : (y) )
 #define square(x) ( (x)*(x) )
 #define abs(x)    ( (x>0) ? (x) : -(x) )
+#define array_size(x) ( sizeof(x)/sizeof(*(x)) )
 
 
 // 
@@ -109,6 +110,11 @@ struct Vertex {
   double r;
   double u;
   double p;
+};
+
+struct InputFloatSettings {
+  const char* name;
+  float* pointer;
 };
 
 struct Result {
@@ -238,29 +244,8 @@ end:
 
 
 
-void init_program(Thread_Data* thread_data) {
-  init_threads_api();
-  check_threads_api();
-
-  {
-    thread_data->xmin = -1.0f;
-    thread_data->xmax = 1.0f;
-    thread_data->tmax = 2.0f;
-    thread_data->p0   = 1.0f;
-    thread_data->x0   = 0.0f;
-    thread_data->r0   = 1.0f;
-    thread_data->ro0  = 1.0f;
-    thread_data->gamma = 1.67f;
-    thread_data->dt   = 0.0001f;
-    thread_data->dx   = 0.01f;
-  }
-
-  data_mutex = create_mutex();
-}
-
 // Main code
 int main(int, char**) {
-
 
   WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
   ::RegisterClassEx(&wc);
@@ -288,12 +273,16 @@ int main(int, char**) {
   ImGui_ImplWin32_Init(hwnd);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
+
+
+  init_threads_api();
+  check_threads_api();
+
   bool show_imgui_demo  = false;
   bool show_implot_demo = false;
   bool show_laba1       = true;
   bool show_laba2       = false;
   bool show_laba3       = false;
-
   bool done             = false;
   bool thread_is_paused = false;
 
@@ -302,7 +291,34 @@ int main(int, char**) {
   Thread computation_thread = {};
   Thread_Data thread_data   = {};
 
-  init_program(&thread_data);
+  InputFloatSettings input_parameters_laba1[] = {
+    { "tmax", &thread_data.tmax },
+    { "xmin", &thread_data.xmin },
+    { "xmax", &thread_data.xmax },
+    { "p0",   &thread_data.p0 },
+    { "x0",   &thread_data.x0 },
+    { "r0",   &thread_data.r0 },
+    { "gamma", &thread_data.gamma },
+    { "dx",   &thread_data.dx },
+    { "dt",   &thread_data.dt },
+  };
+
+  InputFloatSettings input_parameters_laba2 = {};
+
+  { // default parameters.
+    thread_data.tmax = 2.0f;
+    thread_data.xmin = -1.0f;
+    thread_data.xmax = 1.0f;
+    thread_data.p0   = 1.0f;
+    thread_data.x0   = 0.0f;
+    thread_data.r0   = 1.0f;
+    thread_data.ro0  = 1.0f;
+    thread_data.gamma = 1.67f;
+    thread_data.dt   = 0.0001f;
+    thread_data.dx   = 0.01f;
+
+    data_mutex = create_mutex();
+  }
 
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   while (!done) {
@@ -353,16 +369,10 @@ int main(int, char**) {
         static const char* format    = "%.4f";
         static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
 
-        ImGui::InputFloat("tmax", &thread_data.tmax, step, step_fast, format, flags);
-        ImGui::InputFloat("xmin", &thread_data.xmin, step, step_fast, format, flags);
-        ImGui::InputFloat("xmax", &thread_data.xmax, step, step_fast, format, flags);
-        ImGui::InputFloat("p0",   &thread_data.p0,   step, step_fast, format, flags);
-        ImGui::InputFloat("x0",   &thread_data.x0,   step, step_fast, format, flags);
-        ImGui::InputFloat("r0",   &thread_data.r0,   step, step_fast, format, flags);
-        ImGui::InputFloat("ro0",  &thread_data.ro0,  step, step_fast, format, flags);
-        ImGui::InputFloat("gamma", &thread_data.gamma, step, step_fast, format, flags);
-        ImGui::InputFloat("dx",   &thread_data.dx,   step, step_fast, format, flags);
-        ImGui::InputFloat("dt",   &thread_data.dt,   step, step_fast, format, flags);
+        for (size_t i = 0; i < array_size(input_parameters_laba1); i++) {
+          InputFloatSettings s = input_parameters_laba1[i];
+          ImGui::InputFloat(s.name, s.pointer, step, step_fast, format, flags);
+        }
 
         size_t max_time = cursor;
         {
