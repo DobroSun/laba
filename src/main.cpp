@@ -23,6 +23,8 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
+#define clamp(w, mi, ma) ( min(max((w), (mi)), (ma)) )
+
 typedef uint32_t uint;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
@@ -117,6 +119,8 @@ struct InputFloatSettings {
 };
 
 struct Result {
+  double dt;
+  double  t;
   array<double> grid; // for now we only have 1 dimension.
   array<Vertex> data; // this is going to evolve in time. size := NUMBER_OF_LAYERS * grid.size()
 };
@@ -158,6 +162,7 @@ static int computation_thread_proc(void* param) {
     {
       Scoped_Lock lock(&data_mutex);
       result.grid = array_copy(grid, NUMBER_OF_POINTS_IN_X);
+      result.dt   = dt;
     }
   }
   {
@@ -227,6 +232,7 @@ static int computation_thread_proc(void* param) {
     {
       Scoped_Lock lock(&data_mutex);
       array_add(&result.data, solution, NUMBER_OF_POINTS_IN_X);
+      result.t = t;
     }
   }
 end:
@@ -277,7 +283,9 @@ int main(int, char**) {
   bool done             = false;
   bool thread_is_paused = false;
 
-  int cursor = 0;
+  bool  replay = false;
+  int   replay_multiplier = 0;
+  float time = 0;
 
   Thread computation_thread = {};
   Thread_Data thread_data   = {};
@@ -319,23 +327,31 @@ int main(int, char**) {
     }
     if (done) { break; }
         
+    auto framerate = io.Framerate;
+
+    double t;
+    double dt;
 
     array<double> grid_to_be_drawn_this_frame;
     array<Vertex> data_to_be_drawn_this_frame;
     {
       Scoped_Lock mutex(&data_mutex);
 
-      size_t needed_data_start =  cursor    * result.grid.size;
-      size_t needed_data_end   = (cursor+1) * result.grid.size;
+      t  = result.t;;
+      dt = result.dt;;
 
-      if (needed_data_end > result.data.size) {
-        // clamp!
-        needed_data_end   = result.data.size;
-        needed_data_start = needed_data_end - result.grid.size;
-      }
+      size_t n = time / dt;
+      size_t needed_data_start =  n    * result.grid.size;
+      size_t needed_data_end   = (n+1) * result.grid.size;
 
       array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
       array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
+    }
+
+    if (replay) {
+      double m = pow(2.0, replay_multiplier);
+      time += m * 1/framerate;
+      time = (time <= t) ? time : 0;
     }
 
 
@@ -362,13 +378,7 @@ int main(int, char**) {
           InputFloatSettings s = input_parameters_laba1[i];
           ImGui::InputFloat(s.name, s.pointer, step, step_fast, format, flags);
         }
-
-        size_t max_time = cursor;
-        {
-          Scoped_Lock mutex(&data_mutex);
-          max_time = (result.grid.size) ? result.data.size / result.grid.size : 0;
-        }
-        ImGui::SliderInt("Time", &cursor, 0, max_time-1);
+        ImGui::SliderFloat("Time", &time, 0, t);
       }
 
       if (ImGui::CollapsingHeader("Laba 2")) {}
@@ -399,8 +409,23 @@ int main(int, char**) {
           kill_thread(&computation_thread);
         }
       }
+      if (ImGui::Button("Start Playing")) {
+        replay = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("x2")) {
+        replay_multiplier += 1;
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("/2")) {
+        replay_multiplier -= 1;
+      }
+      ImGui::SameLine();
+      ImGui::Text("%s%g", (replay_multiplier >= 0) ? "x" : "/", pow(2.0, abs(replay_multiplier)));
+      if (ImGui::Button("Stop Playing")) {
+        replay = false;
+      }
 
-      auto framerate = io.Framerate;
       ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
       ImGui::End();
     }
