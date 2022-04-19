@@ -193,40 +193,46 @@ static int computation_thread_proc(void* param) {
     i++;
     t += dt;
 
-    for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++) {
-      if (j == 0 || j == NUMBER_OF_POINTS_IN_X-1) {
-        // 
-        // boundary conditions.
-        //
-        Vertex* v = &solution[j];
-        v->t = t;
-        v->r = 0; // @Incomplete: 
-        v->u = u_x0(t);
-        v->p = 0; // @Incomplete: 
+    for (size_t j = 1; j < NUMBER_OF_POINTS_IN_X-1; j++) {
+      // 
+      // internal points.
+      //
+      Vertex curr = get_data(&result, i-1, j);
+      Vertex prev = get_data(&result, i-1, j-1);
+      Vertex next = get_data(&result, i-1, j+1);
 
-      } else {
-        // 
-        // internal points.
-        //
-        Vertex curr = get_data(&result, i-1, j);
-        Vertex prev = get_data(&result, i-1, j-1);
-        Vertex next = get_data(&result, i-1, j+1);
+      double x = result.grid[j];
 
-        double x = result.grid[j];
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = 1/2.0f * (next.r + prev.r) - curr.u * dt / (2.0f * dx) * (next.r - prev.r) - dt / (2.0f * dx) * curr.r * (next.u - prev.u);
+      v->u = 1/2.0f * (next.u + prev.u) - curr.u * dt / (2.0f * dx) * (next.u - prev.u) - dt / (2.0f * dx) / curr.r * (next.p - prev.p);
+      v->p = 1/2.0f * (next.p + prev.p) - curr.u * dt / (2.0f * dx) * (next.p - prev.p) - dt / (2.0f * dx) * gamma * curr.p * (next.u - prev.u);
 
-        Vertex* v = &solution[j];
-        v->t = t;
-        v->r = 1/2.0f * (next.r + prev.r) - curr.u * dt / (2.0f * dx) * (next.r - prev.r) - dt / (2.0f * dx) * curr.r * (next.u - prev.u);
-        v->u = 1/2.0f * (next.u + prev.u) - curr.u * dt / (2.0f * dx) * (next.u - prev.u) - dt / (2.0f * dx) / curr.r * (next.p - prev.p);
-        v->p = 1/2.0f * (next.p + prev.p) - curr.u * dt / (2.0f * dx) * (next.p - prev.p) - dt / (2.0f * dx) * gamma * curr.p * (next.u - prev.u);
-
-        // Courant–Friedrichs–Lewy condition:
-        double frac = dx / (abs(curr.u) + sqrt(gamma * curr.p / curr.r));
-        if (dt > frac) {
-          printf("Exiting the loop on %d layer!\n", i);
-          goto end;
-        }
+      // Courant–Friedrichs–Lewy condition:
+      double frac = dx / (abs(curr.u) + sqrt(gamma * curr.p / curr.r));
+      if (dt > frac) {
+        printf("Exiting the loop on %d layer!\n", i);
+        goto end;
       }
+    }
+
+    size_t j;
+    {
+      j = 0;
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = solution[j+1].r;
+      v->u = u_x0(t);
+      v->p = solution[j+1].p;
+    }
+    {
+      j = NUMBER_OF_POINTS_IN_X-1;
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = solution[j-1].r;
+      v->u = u_x0(t);
+      v->p = solution[j-1].p;
     }
 
     {
@@ -296,6 +302,7 @@ int main(int, char**) {
     { "p0",   &thread_data.p0 },
     { "x0",   &thread_data.x0 },
     { "r0",   &thread_data.r0 },
+    { "ro0",  &thread_data.ro0 },
     { "gamma", &thread_data.gamma },
     { "dx",   &thread_data.dx },
     { "dt",   &thread_data.dt },
@@ -304,11 +311,11 @@ int main(int, char**) {
   InputFloatSettings input_parameters_laba2 = {};
 
   { // default parameters.
-    thread_data.xmin = -1.0f;
-    thread_data.xmax = 1.0f;
+    thread_data.xmin = -3.0f;
+    thread_data.xmax = 3.0f;
     thread_data.p0   = 1.0f;
     thread_data.x0   = 0.0f;
-    thread_data.r0   = 1.0f;
+    thread_data.r0   = 0.5f;
     thread_data.ro0  = 1.0f;
     thread_data.gamma = 1.67f;
     thread_data.dt   = 0.0001f;
@@ -378,6 +385,7 @@ int main(int, char**) {
           InputFloatSettings s = input_parameters_laba1[i];
           ImGui::InputFloat(s.name, s.pointer, step, step_fast, format, flags);
         }
+
         ImGui::SliderFloat("Time", &time, 0, t);
       }
 
@@ -396,31 +404,53 @@ int main(int, char**) {
           }
         }
       }
+
       ImGui::SameLine();
+
       if (ImGui::Button("Pause")) {
         if (!thread_is_paused && is_thread_running(&computation_thread)) {
           suspend_thread(&computation_thread);
           thread_is_paused = true;
         }
       }
+
       ImGui::SameLine();
+
       if (ImGui::Button("Stop")) {
         if (is_thread_running(&computation_thread)) {
           kill_thread(&computation_thread);
+          thread_is_paused = false;
         }
       }
+
+      ImGui::SameLine();
+
+      if (ImGui::Button("Clear")) {
+        if (is_thread_running(&computation_thread)) { // just kill a thread.
+          kill_thread(&computation_thread);
+          thread_is_paused = false;
+        }
+        result = {}; // @MemoryLeak: 
+      }
+
       if (ImGui::Button("Start Playing")) {
         replay = true;
       }
+
       ImGui::SameLine();
+
       if (ImGui::Button("x2")) {
         replay_multiplier += 1;
       }
+
       ImGui::SameLine();
+
       if (ImGui::Button("/2")) {
         replay_multiplier -= 1;
       }
+
       ImGui::SameLine();
+
       ImGui::Text("%s%g", (replay_multiplier >= 0) ? "x" : "/", pow(2.0, abs(replay_multiplier)));
       if (ImGui::Button("Stop Playing")) {
         replay = false;
@@ -438,42 +468,55 @@ int main(int, char**) {
       ImPlot::ShowDemoWindow();
     }
 
+    size_t data_size = data_to_be_drawn_this_frame.size;
+
     array<double> p_array;
-    array_resize(&p_array, data_to_be_drawn_this_frame.size);
-    for (size_t i = 0; i < data_to_be_drawn_this_frame.size; i++) {
-      p_array[i] = data_to_be_drawn_this_frame[i].p;
-    }
-
     array<double> u_array;
-    array_resize(&u_array, data_to_be_drawn_this_frame.size);
-    for (size_t i = 0; i < data_to_be_drawn_this_frame.size; i++) {
+    array<double> r_array;
+
+    array_resize(&p_array, data_size);
+    array_resize(&u_array, data_size);
+    array_resize(&r_array, data_size);
+    for (size_t i = 0; i < data_size; i++) {
+      p_array[i] = data_to_be_drawn_this_frame[i].p;
       u_array[i] = data_to_be_drawn_this_frame[i].u;
+      r_array[i] = data_to_be_drawn_this_frame[i].r;
     }
 
-    array<double> r_array;
-    array_resize(&r_array, data_to_be_drawn_this_frame.size);
-    for (size_t i = 0; i < data_to_be_drawn_this_frame.size; i++) {
-      r_array[i] = data_to_be_drawn_this_frame[i].r;
+    double p_min = FLT_MIN, p_max = FLT_MIN;
+    double u_min = FLT_MIN, u_max = FLT_MIN;
+    double r_min = FLT_MIN, r_max = FLT_MIN;
+
+    for (size_t i = 0; i < data_size; i++) {
+      p_min = min(p_min, p_array[i]);
+      p_max = max(p_max, p_array[i]);
+      u_min = min(u_min, u_array[i]);
+      u_max = max(u_max, u_array[i]);
+      r_min = min(r_min, r_array[i]);
+      r_max = max(r_max, r_array[i]);
     }
 
     if (show_laba1) {
 #if 1
       if (ImPlot::BeginPlot("Davlenie")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax, ImGuiCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1,  0.0, 1.0,                          ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 1.0f, 0.0f);
+
         ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
         ImPlot::EndPlot();
       }
       if (ImPlot::BeginPlot("Velocity")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax, ImGuiCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0, 1.0,                          ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0f, 1.0f);
+
         ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
         ImPlot::EndPlot();
       }
 
       if (ImPlot::BeginPlot("Ro")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax, ImGuiCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0,                           ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 1.5f, 0.0f);
+
         ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
         ImPlot::EndPlot();
       }
