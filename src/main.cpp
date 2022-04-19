@@ -480,31 +480,26 @@ int main(int, char**) {
           }
 #endif
 
-          static const ImVec2 graph_rect_size = ImVec2(300, 300);
-          if (ImPlot::BeginPlot("Davlenie", graph_rect_size)) {
-            auto flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
-            ImPlot::SetupAxes("", "", flags, flags);
-
+          static const ImVec2 plot_rect_size = ImVec2(300, 300);
+          static const auto   plot_flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+          if (ImPlot::BeginPlot("Davlenie", plot_rect_size)) {
+            ImPlot::SetupAxes("", "", plot_flags, plot_flags);
             ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
             ImPlot::EndPlot();
           }
 
           ImGui::SameLine();
 
-          if (ImPlot::BeginPlot("Velocity", graph_rect_size)) {
-            auto flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
-            ImPlot::SetupAxes("", "", flags, flags);
-
+          if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
+            ImPlot::SetupAxes("", "", plot_flags, plot_flags);
             ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
             ImPlot::EndPlot();
           }
 
           ImGui::SameLine();
 
-          if (ImPlot::BeginPlot("Ro", graph_rect_size)) {
-            auto flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
-            ImPlot::SetupAxes("", "", flags, flags);
-
+          if (ImPlot::BeginPlot("Ro", plot_rect_size)) {
+            ImPlot::SetupAxes("", "", plot_flags, plot_flags);
             ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
             ImPlot::EndPlot();
           }
