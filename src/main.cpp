@@ -91,7 +91,7 @@ double u_x0(double t) {
   return 0;
 }
 
-struct Thread_Data {
+struct Parameters_Laba1 {
   float xmin = 0.0f;
   float xmax = 0.0f;
 
@@ -134,7 +134,7 @@ static Mutex data_mutex;
 
 
 static int computation_thread_proc(void* param) {
-  Thread_Data data = *(Thread_Data*) param; // copy
+  Parameters_Laba1 data = *(Parameters_Laba1*) param; // copy
 
   float xmin = data.xmin; 
   float xmax = data.xmax;
@@ -143,11 +143,12 @@ static int computation_thread_proc(void* param) {
   float r0   = data.r0;
   float ro0  = data.ro0;
   float gamma = data.gamma;
-  float dt   = data.dt;
+  float dt_f = data.dt;
   float dx   = data.dx;
 
   size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
 
+  double dt = dt_f;
   double t = 0.0; // real time.
 
   {
@@ -162,8 +163,8 @@ static int computation_thread_proc(void* param) {
     {
       Scoped_Lock lock(&data_mutex);
       result.grid = array_copy(grid, NUMBER_OF_POINTS_IN_X);
-      result.dt   = dt;
     }
+    InterlockedExchange64((int64*) &result.dt, *(int64*) &dt);
   }
   {
     // 
@@ -238,8 +239,8 @@ static int computation_thread_proc(void* param) {
     {
       Scoped_Lock lock(&data_mutex);
       array_add(&result.data, solution, NUMBER_OF_POINTS_IN_X);
-      result.t = t;
     }
+    InterlockedExchange64((int64*) &result.t, *(int64*) &t);
   }
 end:
   return 0;
@@ -289,37 +290,38 @@ int main(int, char**) {
   bool done             = false;
   bool thread_is_paused = false;
 
-  bool  replay = false;
-  int   replay_multiplier = 0;
+  bool auto_fit = false;
+  bool replay = false;
+  int  replay_multiplier = 0;
   float time = 0;
 
   Thread computation_thread = {};
-  Thread_Data thread_data   = {};
+  Parameters_Laba1 parameters_laba1 = {};
 
   InputFloatSettings input_parameters_laba1[] = {
-    { "xmin", &thread_data.xmin },
-    { "xmax", &thread_data.xmax },
-    { "p0",   &thread_data.p0 },
-    { "x0",   &thread_data.x0 },
-    { "r0",   &thread_data.r0 },
-    { "ro0",  &thread_data.ro0 },
-    { "gamma", &thread_data.gamma },
-    { "dx",   &thread_data.dx },
-    { "dt",   &thread_data.dt },
+    { "xmin", &parameters_laba1.xmin },
+    { "xmax", &parameters_laba1.xmax },
+    { "p0",   &parameters_laba1.p0 },
+    { "x0",   &parameters_laba1.x0 },
+    { "r0",   &parameters_laba1.r0 },
+    { "ro0",  &parameters_laba1.ro0 },
+    { "gamma", &parameters_laba1.gamma },
+    { "dx",   &parameters_laba1.dx },
+    { "dt",   &parameters_laba1.dt },
   };
 
   InputFloatSettings input_parameters_laba2 = {};
 
   { // default parameters.
-    thread_data.xmin = -3.0f;
-    thread_data.xmax = 3.0f;
-    thread_data.p0   = 1.0f;
-    thread_data.x0   = 0.0f;
-    thread_data.r0   = 0.5f;
-    thread_data.ro0  = 1.0f;
-    thread_data.gamma = 1.67f;
-    thread_data.dt   = 0.0001f;
-    thread_data.dx   = 0.01f;
+    parameters_laba1.xmin = -3.0f;
+    parameters_laba1.xmax = 3.0f;
+    parameters_laba1.p0   = 1.0f;
+    parameters_laba1.x0   = 0.0f;
+    parameters_laba1.r0   = 0.5f;
+    parameters_laba1.ro0  = 1.0f;
+    parameters_laba1.gamma = 1.67f;
+    parameters_laba1.dt   = 0.0001f;
+    parameters_laba1.dx   = 0.01f;
 
     data_mutex = create_mutex();
   }
@@ -336,31 +338,6 @@ int main(int, char**) {
         
     auto framerate = io.Framerate;
 
-    double t;
-    double dt;
-
-    array<double> grid_to_be_drawn_this_frame;
-    array<Vertex> data_to_be_drawn_this_frame;
-    {
-      Scoped_Lock mutex(&data_mutex);
-
-      t  = result.t;;
-      dt = result.dt;;
-
-      size_t n = time / dt;
-      size_t needed_data_start =  n    * result.grid.size;
-      size_t needed_data_end   = (n+1) * result.grid.size;
-
-      array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
-      array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
-    }
-
-    if (replay) {
-      double m = pow(2.0, replay_multiplier);
-      time += m * 1/framerate;
-      time = (time <= t) ? time : 0;
-    }
-
 
     // Start the Dear ImGui frame
     ImGui_ImplDX11_NewFrame();
@@ -370,8 +347,8 @@ int main(int, char**) {
     {
       ImGui::Begin("Control window");
 
-      ImGui::Checkbox("ImGui Demo",   &show_imgui_demo);
-      ImGui::Checkbox("ImPlot Demo",  &show_implot_demo);
+      ImGui::Checkbox("ImGui Demo",  &show_imgui_demo);
+      ImGui::Checkbox("ImPlot Demo", &show_implot_demo);
 
       if (ImGui::CollapsingHeader("Laba 1"), ImGuiTreeNodeFlags_DefaultOpen) {
         ImGui::Checkbox("Show", &show_laba1);
@@ -386,75 +363,157 @@ int main(int, char**) {
           ImGui::InputFloat(s.name, s.pointer, step, step_fast, format, flags);
         }
 
-        ImGui::SliderFloat("Time", &time, 0, t);
+        ImGui::SliderFloat("Time", &time, 0, result.t);
+        ImGui::Checkbox("Auto Fit", &auto_fit);
+
+        const char* start_or_continue = thread_is_paused ? "Continue" : "Start";
+        if (ImGui::Button(start_or_continue)) {
+          if (thread_is_paused) {
+            resume_thread(&computation_thread);
+            thread_is_paused = false;
+          } else {
+            if (!is_thread_running(&computation_thread)) {
+              start_thread(&computation_thread, computation_thread_proc, &parameters_laba1);
+            }
+          }
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Pause")) {
+          if (!thread_is_paused && is_thread_running(&computation_thread)) {
+            suspend_thread(&computation_thread);
+            thread_is_paused = true;
+          }
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Stop")) {
+          if (is_thread_running(&computation_thread)) {
+            kill_thread(&computation_thread);
+            thread_is_paused = false;
+          }
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Clear")) {
+          if (is_thread_running(&computation_thread)) { // just kill a thread.
+            kill_thread(&computation_thread);
+            thread_is_paused = false;
+          }
+          result = {}; // @MemoryLeak: 
+        }
+
+        if (ImGui::Button("Start Playing")) {
+          replay = true;
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("x2")) {
+          replay_multiplier += 1;
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("/2")) {
+          replay_multiplier -= 1;
+        }
+
+        ImGui::SameLine();
+
+        ImGui::Text("%s%g", (replay_multiplier >= 0) ? "x" : "/", pow(2.0, abs(replay_multiplier)));
+        if (ImGui::Button("Stop Playing")) {
+          replay = false;
+        }
+
+        if (show_laba1) {
+          array<double> grid_to_be_drawn_this_frame;
+          array<Vertex> data_to_be_drawn_this_frame;
+          {
+            Scoped_Lock mutex(&data_mutex);
+
+            size_t n = time / result.dt;
+            size_t needed_data_start =  n    * result.grid.size;
+            size_t needed_data_end   = (n+1) * result.grid.size;
+
+            array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
+            array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
+          }
+
+          if (replay) {
+            double m = pow(2.0, replay_multiplier);
+            time += m * 1/framerate;
+            time = (time <= result.t) ? time : 0;
+          }
+
+          size_t data_size = data_to_be_drawn_this_frame.size;
+
+          array<double> p_array;
+          array<double> u_array;
+          array<double> r_array;
+
+          array_resize(&p_array, data_size);
+          array_resize(&u_array, data_size);
+          array_resize(&r_array, data_size);
+
+          for (size_t i = 0; i < data_size; i++) {
+            p_array[i] = data_to_be_drawn_this_frame[i].p;
+            u_array[i] = data_to_be_drawn_this_frame[i].u;
+            r_array[i] = data_to_be_drawn_this_frame[i].r;
+          }
+
+#if 0
+          double p_min = FLT_MIN, p_max = FLT_MIN;
+          double u_min = FLT_MIN, u_max = FLT_MIN;
+          double r_min = FLT_MIN, r_max = FLT_MIN;
+
+          for (size_t i = 0; i < data_size; i++) {
+            p_min = min(p_min, p_array[i]);
+            p_max = max(p_max, p_array[i]);
+            u_min = min(u_min, u_array[i]);
+            u_max = max(u_max, u_array[i]);
+            r_min = min(r_min, r_array[i]);
+            r_max = max(r_max, r_array[i]);
+          }
+#endif
+
+          static const ImVec2 graph_rect_size = ImVec2(300, 300);
+          if (ImPlot::BeginPlot("Davlenie", graph_rect_size)) {
+            auto flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+            ImPlot::SetupAxes("", "", flags, flags);
+
+            ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
+            ImPlot::EndPlot();
+          }
+
+          ImGui::SameLine();
+
+          if (ImPlot::BeginPlot("Velocity", graph_rect_size)) {
+            auto flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+            ImPlot::SetupAxes("", "", flags, flags);
+
+            ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
+            ImPlot::EndPlot();
+          }
+
+          ImGui::SameLine();
+
+          if (ImPlot::BeginPlot("Ro", graph_rect_size)) {
+            auto flags = auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+            ImPlot::SetupAxes("", "", flags, flags);
+
+            ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
+            ImPlot::EndPlot();
+          }
+        }
       }
 
       if (ImGui::CollapsingHeader("Laba 2")) {}
       if (ImGui::CollapsingHeader("Laba 3")) {}
       if (ImGui::CollapsingHeader("Laba 4")) {}
-
-      const char* start_or_continue = thread_is_paused ? "Continue" : "Start";
-      if (ImGui::Button(start_or_continue)) {
-        if (thread_is_paused) {
-          resume_thread(&computation_thread);
-          thread_is_paused = false;
-        } else {
-          if (!is_thread_running(&computation_thread)) {
-            start_thread(&computation_thread, computation_thread_proc, &thread_data);
-          }
-        }
-      }
-
-      ImGui::SameLine();
-
-      if (ImGui::Button("Pause")) {
-        if (!thread_is_paused && is_thread_running(&computation_thread)) {
-          suspend_thread(&computation_thread);
-          thread_is_paused = true;
-        }
-      }
-
-      ImGui::SameLine();
-
-      if (ImGui::Button("Stop")) {
-        if (is_thread_running(&computation_thread)) {
-          kill_thread(&computation_thread);
-          thread_is_paused = false;
-        }
-      }
-
-      ImGui::SameLine();
-
-      if (ImGui::Button("Clear")) {
-        if (is_thread_running(&computation_thread)) { // just kill a thread.
-          kill_thread(&computation_thread);
-          thread_is_paused = false;
-        }
-        result = {}; // @MemoryLeak: 
-      }
-
-      if (ImGui::Button("Start Playing")) {
-        replay = true;
-      }
-
-      ImGui::SameLine();
-
-      if (ImGui::Button("x2")) {
-        replay_multiplier += 1;
-      }
-
-      ImGui::SameLine();
-
-      if (ImGui::Button("/2")) {
-        replay_multiplier -= 1;
-      }
-
-      ImGui::SameLine();
-
-      ImGui::Text("%s%g", (replay_multiplier >= 0) ? "x" : "/", pow(2.0, abs(replay_multiplier)));
-      if (ImGui::Button("Stop Playing")) {
-        replay = false;
-      }
 
       ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
       ImGui::End();
@@ -466,61 +525,6 @@ int main(int, char**) {
 
     if (show_implot_demo) {
       ImPlot::ShowDemoWindow();
-    }
-
-    size_t data_size = data_to_be_drawn_this_frame.size;
-
-    array<double> p_array;
-    array<double> u_array;
-    array<double> r_array;
-
-    array_resize(&p_array, data_size);
-    array_resize(&u_array, data_size);
-    array_resize(&r_array, data_size);
-    for (size_t i = 0; i < data_size; i++) {
-      p_array[i] = data_to_be_drawn_this_frame[i].p;
-      u_array[i] = data_to_be_drawn_this_frame[i].u;
-      r_array[i] = data_to_be_drawn_this_frame[i].r;
-    }
-
-    double p_min = FLT_MIN, p_max = FLT_MIN;
-    double u_min = FLT_MIN, u_max = FLT_MIN;
-    double r_min = FLT_MIN, r_max = FLT_MIN;
-
-    for (size_t i = 0; i < data_size; i++) {
-      p_min = min(p_min, p_array[i]);
-      p_max = max(p_max, p_array[i]);
-      u_min = min(u_min, u_array[i]);
-      u_max = max(u_max, u_array[i]);
-      r_min = min(r_min, r_array[i]);
-      r_max = max(r_max, r_array[i]);
-    }
-
-    if (show_laba1) {
-#if 1
-      if (ImPlot::BeginPlot("Davlenie")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 1.0f, 0.0f);
-
-        ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
-        ImPlot::EndPlot();
-      }
-      if (ImPlot::BeginPlot("Velocity")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.0f, 1.0f);
-
-        ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
-        ImPlot::EndPlot();
-      }
-
-      if (ImPlot::BeginPlot("Ro")) {
-        ImPlot::SetupAxisLimits(ImAxis_X1, thread_data.xmin, thread_data.xmax);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 1.5f, 0.0f);
-
-        ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
-        ImPlot::EndPlot();
-      }
-#endif
     }
 
 
