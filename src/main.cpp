@@ -352,6 +352,117 @@ end:
   return 0;
 }
 
+static double compute_p(Vertex v, double gamma) {
+  return v.E * v.r * (gamma - 1);
+}
+
+static int conservative_lax_method(void* param) {
+  Parameters_Laba1 data = *(Parameters_Laba1*) param; // copy
+
+  float xmin = data.xmin; 
+  float xmax = data.xmax;
+  float p0   = data.p0;
+  float x0   = data.x0;
+  float r0   = data.r0;
+  float ro0  = data.ro0;
+  float gamma = data.gamma;
+  float dt_f = data.dt;
+  float dx   = data.dx;
+
+  size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
+
+  double dt = dt_f;
+  double t = 0.0; // real time.
+
+  {
+    // 
+    // create a grid.
+    //
+    double* grid = (double*) alloca(sizeof(double) * NUMBER_OF_POINTS_IN_X);
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+      grid[i] = xmin + i*dx;
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      result.grid = array_copy(grid, NUMBER_OF_POINTS_IN_X);
+    }
+    InterlockedExchange64((int64*) &result.dt, *(int64*) &dt);
+  }
+  {
+    // 
+    // apply initial conditions on t=0
+    //
+    Vertex* data = (Vertex*) alloca(sizeof(Vertex) * NUMBER_OF_POINTS_IN_X);
+    for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++)  {
+      double x = result.grid[j];
+
+      Vertex* v = &data[j];
+      v->t = t;
+      v->r = ro_t0(x, ro0);
+      v->u =  u_t0(x);
+      v->p =  p_t0(x, p0, x0, r0);
+      v->E =  v->p / (v->r * (gamma-1));
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      array_add(&result.data, data, NUMBER_OF_POINTS_IN_X);
+    }
+  }
+
+  Vertex* solution = (Vertex*) alloca(sizeof(Vertex) * NUMBER_OF_POINTS_IN_X);
+
+  size_t i = 0;
+  while (1) {
+    i++;
+    t += dt;
+
+    for (size_t j = 1; j < NUMBER_OF_POINTS_IN_X-1; j++) {
+      // 
+      // internal points.
+      //
+      Vertex curr = get_data(&result, i-1, j);
+      Vertex prev = get_data(&result, i-1, j-1);
+      Vertex next = get_data(&result, i-1, j+1);
+
+      double x = result.grid[j];
+
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = 1/2.0f * (next.r + prev.r) - dt / (2*dx) * (next.r*next.u - prev.r*prev.u);
+      v->u = 1/v->r * 1/2.0f * (next.r*next.u + prev.r*prev.u) - dt / (2*dx) * (next.r*square(next.u) + next.p - prev.r*square(prev.u) - prev.p);
+      v->E = -1/2.0f * square(v->u) + 1/v->r * (1/2.0f * (next.r*(next.E + 1/2.0f*square(next.u)) + prev.r*(prev.E + 1/2.0f*square(prev.u))) - dt / (2*dx) * ((next.r*next.E + compute_p(next, gamma) + 1/2.0f*next.r*square(next.u))*next.u - (prev.r*prev.E + compute_p(prev, gamma) + 1/2.0f*prev.r*square(prev.u))*prev.u));
+    }
+
+    size_t j;
+    {
+      j = 0;
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = solution[j+1].r;
+      v->u = u_x0(t);
+      v->E = solution[j+1].E;
+    }
+    {
+      j = NUMBER_OF_POINTS_IN_X-1;
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = solution[j-1].r;
+      v->u = u_x0(t);
+      v->E = solution[j-1].E;
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      array_add(&result.data, solution, NUMBER_OF_POINTS_IN_X);
+    }
+    InterlockedExchange64((int64*) &result.t, *(int64*) &t);
+  }
+
+  return 0;
+}
+
 struct The_Thing {
   Thread thread = {};
   Parameters_Laba1 parameters_laba1 = {};
@@ -491,7 +602,7 @@ int main(int, char**) {
               thing->thread_is_paused = false;
             } else {
               if (!is_thread_running(&thing->thread)) {
-                start_thread(&thing->thread, euler_method/*nonconservative_lax_method*/, &thing->parameters_laba1);
+                start_thread(&thing->thread, conservative_lax_method, &thing->parameters_laba1);
               }
             }
           }
