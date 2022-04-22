@@ -103,6 +103,13 @@ struct Parameters_Laba1 {
   float dx = 0.0f;
 };
 
+struct Parameters_Laba2 {
+  float xmin = 0.0f;
+  float xmax = 0.0f;
+  float dt = 0.0f;
+  float dx = 0.0f;
+};
+
 struct Vertex {
   double t;
   double r;
@@ -113,9 +120,14 @@ struct Vertex {
   };
 };
 
-struct InputFloatSettings {
+struct Input_Float_Settings {
   const char* name;
   float* pointer;
+};
+
+struct Input_Parameter_Settings {
+  Input_Float_Settings* inputs;
+  size_t count;
 };
 
 struct Result {
@@ -463,11 +475,23 @@ static int conservative_lax_method(void* param) {
   return 0;
 }
 
+static int lagrange_method(void* param) {
+  return 0;
+}
+
+typedef int (*Thread_Proc)(void*);
+
 struct The_Thing {
-  Thread thread = {};
-  Parameters_Laba1 parameters_laba1 = {};
+  Thread      thread = {};
+  Thread_Proc thread_proc = {};
+  void*       thread_parameter = {};
+
+  const char* name = {};
+  Input_Parameter_Settings settings = {};
 
   bool thread_is_paused = false;
+  bool clear_the_thing = false;
+  bool should_show = true;
 
   bool auto_fit = false;
   bool replay = false;
@@ -475,6 +499,87 @@ struct The_Thing {
   float time = 0;
 
 };
+
+void render_laba1(Allocator temp_allocator, The_Thing* thing) {
+  if (thing->clear_the_thing) {
+    result = {};
+    thing->clear_the_thing = false;
+  }
+
+  if (thing->should_show) {
+    array<double> grid_to_be_drawn_this_frame;
+    array<Vertex> data_to_be_drawn_this_frame;
+    array<double> p_array;
+    array<double> u_array;
+    array<double> r_array;
+
+
+    grid_to_be_drawn_this_frame.allocator = temp_allocator;
+    data_to_be_drawn_this_frame.allocator = temp_allocator;
+    p_array.allocator = temp_allocator;
+    u_array.allocator = temp_allocator;
+    r_array.allocator = temp_allocator;
+
+
+    {
+      Scoped_Lock mutex(&data_mutex);
+
+      size_t n = thing->time / result.dt;
+      size_t needed_data_start =  n    * result.grid.size;
+      size_t needed_data_end   = (n+1) * result.grid.size;
+
+      if (result.data.size && result.grid.size) {
+        array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
+        array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
+      }
+    }
+
+    size_t data_size = data_to_be_drawn_this_frame.size;
+
+    array_resize(&p_array, data_size);
+    array_resize(&u_array, data_size);
+    array_resize(&r_array, data_size);
+
+    for (size_t i = 0; i < data_size; i++) {
+      p_array[i] = data_to_be_drawn_this_frame[i].p;
+      u_array[i] = data_to_be_drawn_this_frame[i].u;
+      r_array[i] = data_to_be_drawn_this_frame[i].r;
+    }
+
+    static const ImVec2 plot_rect_size = ImVec2(300, 300);
+    static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+    if (ImPlot::BeginPlot("Davlenie", plot_rect_size)) {
+      ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+      ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
+      ImPlot::EndPlot();
+    }
+
+    ImGui::SameLine();
+
+    if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
+      ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+      ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
+      ImPlot::EndPlot();
+    }
+
+    ImGui::SameLine();
+
+    if (ImPlot::BeginPlot("Ro", plot_rect_size)) {
+      ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+      ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
+      ImPlot::EndPlot();
+    }
+  }
+}
+
+void render_laba2(Allocator temp_allocator, The_Thing* thing) {
+  if (thing->clear_the_thing) {
+    thing->clear_the_thing = false;
+  }
+
+  if (thing->should_show) {
+  }
+}
 
 // Main code
 int main(int, char**) {
@@ -517,35 +622,56 @@ int main(int, char**) {
   bool show_laba3       = false;
   bool done             = false;
 
-  The_Thing things[1];
-  Parameters_Laba1* parameters_laba1 = &things[0].parameters_laba1;
+  Parameters_Laba1 parameters_laba1 = {};
+  Parameters_Laba2 parameters_laba2 = {};
 
-  InputFloatSettings input_parameters_laba1[] = {
-    { "xmin", &parameters_laba1->xmin },
-    { "xmax", &parameters_laba1->xmax },
-    { "p0",   &parameters_laba1->p0 },
-    { "x0",   &parameters_laba1->x0 },
-    { "r0",   &parameters_laba1->r0 },
-    { "ro0",  &parameters_laba1->ro0 },
-    { "gamma", &parameters_laba1->gamma },
-    { "dx",   &parameters_laba1->dx },
-    { "dt",   &parameters_laba1->dt },
+  Input_Float_Settings input_parameters_laba1[] = {
+    { "xmin", &parameters_laba1.xmin },
+    { "xmax", &parameters_laba1.xmax },
+    { "p0",   &parameters_laba1.p0 },
+    { "x0",   &parameters_laba1.x0 },
+    { "r0",   &parameters_laba1.r0 },
+    { "ro0",  &parameters_laba1.ro0 },
+    { "gamma", &parameters_laba1.gamma },
+    { "dx",   &parameters_laba1.dx },
+    { "dt",   &parameters_laba1.dt },
   };
 
-  InputFloatSettings input_parameters_laba2 = {};
+  Input_Float_Settings input_parameters_laba2[] = {
+    { "xmin", &parameters_laba2.xmin },
+    { "xmax", &parameters_laba2.xmax },
+    { "dx",   &parameters_laba2.dx },
+    { "dt",   &parameters_laba2.dt },
+  };
+
+  The_Thing things[2];
+  things[0].name = "Laba 1";
+  things[0].thread_proc = euler_method;
+  things[0].thread_parameter = &parameters_laba1;
+  things[0].settings = { input_parameters_laba1, array_size(input_parameters_laba1) }; 
+
+  things[1].name = "Laba 2";
+  things[1].thread_proc = lagrange_method;
+  things[1].thread_parameter = &parameters_laba2;
+  things[1].settings = { input_parameters_laba2, array_size(input_parameters_laba2) };
 
   { // default parameters.
-    parameters_laba1->xmin = -3.0f;
-    parameters_laba1->xmax = 3.0f;
-    parameters_laba1->p0   = 1.0f;
-    parameters_laba1->x0   = 0.0f;
-    parameters_laba1->r0   = 0.5f;
-    parameters_laba1->ro0  = 1.0f;
-    parameters_laba1->gamma = 1.67f;
-    parameters_laba1->dt   = 0.0001f;
-    parameters_laba1->dx   = 0.01f;
+    parameters_laba1.xmin = -3.0f;
+    parameters_laba1.xmax = 3.0f;
+    parameters_laba1.p0   = 1.0f;
+    parameters_laba1.x0   = 0.0f;
+    parameters_laba1.r0   = 0.5f;
+    parameters_laba1.ro0  = 1.0f;
+    parameters_laba1.gamma = 1.67f;
+    parameters_laba1.dt   = 0.0001f;
+    parameters_laba1.dx   = 0.01f;
 
-    data_mutex = create_mutex();
+    parameters_laba2.xmin = -3.0f;
+    parameters_laba2.xmax =  3.0f;
+    parameters_laba2.dt   = 0.0001f;
+    parameters_laba2.dx   = 0.01f;
+
+    data_mutex = create_mutex(); // @Incomplete: move into Result.
   }
 
   Memory_Arena temporary_storage;
@@ -579,17 +705,17 @@ int main(int, char**) {
       for (size_t i = 0; i < array_size(things); i++) {
         The_Thing* thing = &things[i];
 
-        if (ImGui::CollapsingHeader("Laba 1"), ImGuiTreeNodeFlags_DefaultOpen) {
-          ImGui::Checkbox("Show", &show_laba1);
+        if (ImGui::CollapsingHeader(thing->name)) {
+          ImGui::Checkbox("Show", &thing->should_show);
 
           static const float step      = 0.0f;
           static const float step_fast = 0.0f;
           static const char* format    = "%.4f";
           static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
 
-          for (size_t i = 0; i < array_size(input_parameters_laba1); i++) {
-            InputFloatSettings s = input_parameters_laba1[i];
-            ImGui::InputFloat(s.name, s.pointer, step, step_fast, format, flags);
+          for (size_t i = 0; i < thing->settings.count; i++) {
+            Input_Float_Settings* s = &thing->settings.inputs[i];
+            ImGui::InputFloat(s->name, s->pointer, step, step_fast, format, flags);
           }
 
           ImGui::SliderFloat("Time", &thing->time, 0, result.t);
@@ -602,7 +728,7 @@ int main(int, char**) {
               thing->thread_is_paused = false;
             } else {
               if (!is_thread_running(&thing->thread)) {
-                start_thread(&thing->thread, conservative_lax_method, &thing->parameters_laba1);
+                start_thread(&thing->thread, thing->thread_proc, thing->thread_parameter);
               }
             }
           }
@@ -632,7 +758,7 @@ int main(int, char**) {
               kill_thread(&thing->thread);
               thing->thread_is_paused = false;
             }
-            result = {}; // @MemoryLeak: 
+            thing->clear_the_thing = true;
           }
 
           if (ImGui::Button("Start Playing")) {
@@ -658,101 +784,18 @@ int main(int, char**) {
             thing->replay = false;
           }
 
-          if (show_laba1) {
-            array<double> grid_to_be_drawn_this_frame;
-            array<Vertex> data_to_be_drawn_this_frame;
-            array<double> p_array;
-            array<double> u_array;
-            array<double> r_array;
+          if (thing->replay) {
+            double m = pow(2.0, thing->replay_multiplier);
+            thing->time += m * 1/framerate;
+            thing->time = (thing->time <= result.t) ? thing->time : 0; // @Incomplete: result.t;
+          }
 
-
-            grid_to_be_drawn_this_frame.allocator = temp_allocator;
-            data_to_be_drawn_this_frame.allocator = temp_allocator;
-            p_array.allocator = temp_allocator;
-            u_array.allocator = temp_allocator;
-            r_array.allocator = temp_allocator;
-
-
-            {
-              Scoped_Lock mutex(&data_mutex);
-
-              size_t n = thing->time / result.dt;
-              size_t needed_data_start =  n    * result.grid.size;
-              size_t needed_data_end   = (n+1) * result.grid.size;
-
-              if (result.data.size && result.grid.size) {
-                array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
-                array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
-              }
-            }
-
-            size_t data_size = data_to_be_drawn_this_frame.size;
-
-            array_resize(&p_array, data_size);
-            array_resize(&u_array, data_size);
-            array_resize(&r_array, data_size);
-
-            for (size_t i = 0; i < data_size; i++) {
-              p_array[i] = data_to_be_drawn_this_frame[i].p;
-              u_array[i] = data_to_be_drawn_this_frame[i].u;
-              r_array[i] = data_to_be_drawn_this_frame[i].r;
-            }
-#if 0
-            double p_min = FLT_MIN, p_max = FLT_MIN;
-            double u_min = FLT_MIN, u_max = FLT_MIN;
-            double r_min = FLT_MIN, r_max = FLT_MIN;
-
-            for (size_t i = 0; i < data_size; i++) {
-              p_min = min(p_min, p_array[i]);
-              p_max = max(p_max, p_array[i]);
-              u_min = min(u_min, u_array[i]);
-              u_max = max(u_max, u_array[i]);
-              r_min = min(r_min, r_array[i]);
-              r_max = max(r_max, r_array[i]);
-            }
-#endif
-
-
-            if (thing->replay) {
-              double m = pow(2.0, thing->replay_multiplier);
-              thing->time += m * 1/framerate;
-              thing->time = (thing->time <= result.t) ? thing->time : 0;
-            }
-
-            static const ImVec2 plot_rect_size = ImVec2(300, 300);
-            static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
-            if (ImPlot::BeginPlot("Davlenie", plot_rect_size)) {
-              ImPlot::SetupAxes("", "", plot_flags, plot_flags);
-              ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
-              ImPlot::EndPlot();
-            }
-
-            ImGui::SameLine();
-
-            if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
-              ImPlot::SetupAxes("", "", plot_flags, plot_flags);
-              ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
-              ImPlot::EndPlot();
-            }
-
-            ImGui::SameLine();
-
-            if (ImPlot::BeginPlot("Ro", plot_rect_size)) {
-              ImPlot::SetupAxes("", "", plot_flags, plot_flags);
-              ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
-              ImPlot::EndPlot();
-            }
+          switch(i) {
+          case 0: render_laba1(temp_allocator, thing); break;
+          case 1: render_laba2(temp_allocator, thing); break;
           }
         }
-
-
-
-
       }
-
-      if (ImGui::CollapsingHeader("Laba 2")) {}
-      if (ImGui::CollapsingHeader("Laba 3")) {}
-      if (ImGui::CollapsingHeader("Laba 4")) {}
 
       ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/framerate, framerate);
       ImGui::End();
