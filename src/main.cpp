@@ -103,12 +103,14 @@ struct Parameters_Laba1 {
   float dx = 0.0f;
 };
 
-
 struct Vertex {
   double t;
   double r;
   double u;
-  double p;
+  union {
+    double p;
+    double E;
+  };
 };
 
 struct InputFloatSettings {
@@ -130,8 +132,114 @@ Vertex get_data(Result* r, size_t t, size_t j) {
 static Result result;
 static Mutex data_mutex;
 
+static int euler_method(void* param) {
+  Parameters_Laba1 data = *(Parameters_Laba1*) param; // copy
 
-static int computation_thread_proc(void* param) {
+  float xmin = data.xmin; 
+  float xmax = data.xmax;
+  float p0   = data.p0;
+  float x0   = data.x0;
+  float r0   = data.r0;
+  float ro0  = data.ro0;
+  float gamma = data.gamma;
+  float dt_f = data.dt;
+  float dx   = data.dx;
+
+  size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
+
+  double dt = dt_f;
+  double t = 0.0; // real time.
+
+  {
+    // 
+    // create a grid.
+    //
+    double* grid = (double*) alloca(sizeof(double) * NUMBER_OF_POINTS_IN_X);
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+      grid[i] = xmin + i*dx;
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      result.grid = array_copy(grid, NUMBER_OF_POINTS_IN_X);
+    }
+    InterlockedExchange64((int64*) &result.dt, *(int64*) &dt);
+  }
+  {
+    // 
+    // apply initial conditions on t=0
+    //
+    Vertex* data = (Vertex*) alloca(sizeof(Vertex) * NUMBER_OF_POINTS_IN_X);
+    for (size_t j = 0; j < NUMBER_OF_POINTS_IN_X; j++)  {
+      double x = result.grid[j];
+
+      Vertex* v = &data[j];
+      v->t = t;
+      v->r = ro_t0(x, ro0);
+      v->u =  u_t0(x);
+      v->p =  p_t0(x, p0, x0, r0);
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      array_add(&result.data, data, NUMBER_OF_POINTS_IN_X);
+    }
+  }
+
+  Vertex* solution = (Vertex*) alloca(sizeof(Vertex) * NUMBER_OF_POINTS_IN_X);
+
+  size_t i = 0;
+  while (1) {
+    i++;
+    t += dt;
+
+    for (size_t j = 1; j < NUMBER_OF_POINTS_IN_X-1; j++) {
+      // 
+      // internal points.
+      //
+      Vertex curr = get_data(&result, i-1, j);
+      Vertex prev = get_data(&result, i-1, j-1);
+      Vertex next = get_data(&result, i-1, j+1);
+
+      double x = result.grid[j];
+      double a = (curr.u >= 0) ? 0 : 1;
+
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = curr.r - (1 - a) * curr.u * dt / dx * (curr.r - prev.r) - a * curr.u * dt / dx * (next.r - curr.r) - dt / (2*dx) * curr.r * (next.u - prev.u);
+      v->u = curr.u - (1 - a) * curr.u * dt / dx * (curr.u - prev.u) - a * curr.u * dt / dx * (next.u - curr.u) - dt / (2*dx) / curr.r * (next.p - prev.p);;
+      v->p = curr.p - (1 - a) * curr.u * dt / dx * (curr.p - prev.p) - a * curr.u * dt / dx * (next.p - curr.p) - dt / (2*dx) * gamma * curr.p * (next.u - prev.u);
+    }
+
+
+    size_t j;
+    {
+      j = 0;
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = solution[j+1].r;
+      v->u = u_x0(t);
+      v->p = solution[j+1].p;
+    }
+    {
+      j = NUMBER_OF_POINTS_IN_X-1;
+      Vertex* v = &solution[j];
+      v->t = t;
+      v->r = solution[j-1].r;
+      v->u = u_x0(t);
+      v->p = solution[j-1].p;
+    }
+
+    {
+      Scoped_Lock lock(&data_mutex);
+      array_add(&result.data, solution, NUMBER_OF_POINTS_IN_X);
+    }
+    InterlockedExchange64((int64*) &result.t, *(int64*) &t);
+  }
+  return 0;
+}
+
+static int nonconservative_lax_method(void* param) {
   Parameters_Laba1 data = *(Parameters_Laba1*) param; // copy
 
   float xmin = data.xmin; 
@@ -383,7 +491,7 @@ int main(int, char**) {
               thing->thread_is_paused = false;
             } else {
               if (!is_thread_running(&thing->thread)) {
-                start_thread(&thing->thread, computation_thread_proc, &thing->parameters_laba1);
+                start_thread(&thing->thread, euler_method/*nonconservative_lax_method*/, &thing->parameters_laba1);
               }
             }
           }
@@ -461,8 +569,10 @@ int main(int, char**) {
               size_t needed_data_start =  n    * result.grid.size;
               size_t needed_data_end   = (n+1) * result.grid.size;
 
-              array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
-              array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
+              if (result.data.size && result.grid.size) {
+                array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
+                array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
+              }
             }
 
             size_t data_size = data_to_be_drawn_this_frame.size;
