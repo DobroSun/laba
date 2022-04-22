@@ -13,10 +13,8 @@
 #include "../implot/implot_demo.cpp"
 #include "../implot/implot_items.cpp"
 
-#include <cmath>
-#include <cstdint>
+#include "../std/pch.h"
 
-#include "array.cpp"
 #include "threads_api.cpp"
 #include "threads_windows.cpp"
 
@@ -331,6 +329,9 @@ int main(int, char**) {
     data_mutex = create_mutex();
   }
 
+  Memory_Arena temporary_storage;
+  Allocator temp_allocator = begin_memory_arena(&temporary_storage, KB(200));
+
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   while (!done) {
     MSG msg;
@@ -343,6 +344,7 @@ int main(int, char**) {
         
     auto framerate = io.Framerate;
 
+    reset_memory_arena(&temporary_storage);
 
     // Start the Dear ImGui frame
     ImGui_ImplDX11_NewFrame();
@@ -440,6 +442,18 @@ int main(int, char**) {
           if (show_laba1) {
             array<double> grid_to_be_drawn_this_frame;
             array<Vertex> data_to_be_drawn_this_frame;
+            array<double> p_array;
+            array<double> u_array;
+            array<double> r_array;
+
+
+            grid_to_be_drawn_this_frame.allocator = temp_allocator;
+            data_to_be_drawn_this_frame.allocator = temp_allocator;
+            p_array.allocator = temp_allocator;
+            u_array.allocator = temp_allocator;
+            r_array.allocator = temp_allocator;
+
+
             {
               Scoped_Lock mutex(&data_mutex);
 
@@ -451,17 +465,7 @@ int main(int, char**) {
               array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
             }
 
-            if (thing->replay) {
-              double m = pow(2.0, thing->replay_multiplier);
-              thing->time += m * 1/framerate;
-              thing->time = (thing->time <= result.t) ? thing->time : 0;
-            }
-
             size_t data_size = data_to_be_drawn_this_frame.size;
-
-            array<double> p_array;
-            array<double> u_array;
-            array<double> r_array;
 
             array_resize(&p_array, data_size);
             array_resize(&u_array, data_size);
@@ -472,7 +476,6 @@ int main(int, char**) {
               u_array[i] = data_to_be_drawn_this_frame[i].u;
               r_array[i] = data_to_be_drawn_this_frame[i].r;
             }
-
 #if 0
             double p_min = FLT_MIN, p_max = FLT_MIN;
             double u_min = FLT_MIN, u_max = FLT_MIN;
@@ -487,6 +490,13 @@ int main(int, char**) {
               r_max = max(r_max, r_array[i]);
             }
 #endif
+
+
+            if (thing->replay) {
+              double m = pow(2.0, thing->replay_multiplier);
+              thing->time += m * 1/framerate;
+              thing->time = (thing->time <= result.t) ? thing->time : 0;
+            }
 
             static const ImVec2 plot_rect_size = ImVec2(300, 300);
             static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
@@ -546,6 +556,8 @@ int main(int, char**) {
     g_pSwapChain->Present(1, 0); // Present with vsync
     //g_pSwapChain->Present(0, 0); // Present without vsync
   }
+
+  end_memory_arena(&temporary_storage);
 
   // Cleanup
   ImGui_ImplDX11_Shutdown();
