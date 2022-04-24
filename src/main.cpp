@@ -114,6 +114,8 @@ struct Parameters_Laba2 {
   float gamma = 0.0f;
   float alpha = 0;
 
+  float a = 0;
+
   float dt = 0.0f;
   float dx = 0.0f;
 };
@@ -131,13 +133,14 @@ struct Result {
   Mutex data_mutex = {};
   float dt;
   float  t;
-  array<float> grid; // for now we only have 1 dimension.
+
   array<float> time; // time domain;
+  array<float> grid; // for now we only have 1 dimension.
   array<Vertex> data; // this is going to evolve in time. size := NUMBER_OF_LAYERS * grid.size()
 };
 
-Vertex get_data(Result* r, size_t t, size_t j) {
-  return r->data[t * r->grid.size + j];
+Vertex get_data(Result* r, size_t i, size_t j) {
+  return r->data[i * r->grid.size + j];
 }
 
 static Result result;
@@ -193,6 +196,7 @@ static int euler_upwind_method(void* param) {
     {
       Scoped_Lock lock(&result.data_mutex);
       array_add(&result.data, &solution);
+      array_add(&result.time, t);
     }
   }
 
@@ -296,6 +300,7 @@ static int nonconservative_lax_method(void* param) {
     {
       Scoped_Lock lock(&result.data_mutex);
       array_add(&result.data, &solution);
+      array_add(&result.time, t);
     }
   }
 
@@ -374,6 +379,7 @@ static int conservative_lax_method(void* param) {
   size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
 
   float t = 0.0; // real time.
+  InterlockedExchange((uint*) &result.dt, *(uint*) &dt);
 
   {
     // 
@@ -388,7 +394,6 @@ static int conservative_lax_method(void* param) {
       Scoped_Lock lock(&result.data_mutex);
       result.grid = array_copy(&grid);
     }
-    InterlockedExchange((uint*) &result.dt, *(uint*) &dt);
   }
 
   array<Vertex> solution = temp_array(Vertex, NUMBER_OF_POINTS_IN_X);
@@ -410,6 +415,7 @@ static int conservative_lax_method(void* param) {
     {
       Scoped_Lock lock(&result.data_mutex);
       array_add(&result.data, &solution);
+      array_add(&result.time, t);
     }
   }
 
@@ -462,11 +468,16 @@ static int conservative_lax_method(void* param) {
 }
 
 struct Voxel {
-  float X;
-  float u;
-  float r;
-  float E;
-  float p;
+  double X;
+  double u;
+  double r;
+  double p;
+  double E;
+};
+
+struct Velocity_And_Euler {
+  double X;
+  double u;
 };
 
 struct Result_Lagrange {
@@ -475,76 +486,224 @@ struct Result_Lagrange {
   float t;  // @Incomplete: move this shit out of here, keep it in The_Thing;
   float dt; // @Incomplete: same
 
-  array<float> grid; 
-  array<float> internal_points_grid;
-  array<Voxel> data;
+  array<float> time;
+  array<double>   points_grid; 
+  array<double> internal_grid;
+
+  array<Velocity_And_Euler> points_data;
+  array<Voxel>            internal_data;
 };
+
+double get_grid(Result_Lagrange* l, size_t j) {
+  return l->points_grid[j];
+}
+
+Velocity_And_Euler get_point(Result_Lagrange* l, size_t i, size_t j) {
+  return l->points_data[i * l->points_grid.size + j];
+}
+
+Voxel get_internal(Result_Lagrange* l, float i, float j) {
+  size_t ii = i;
+  size_t jj = j - 1/2.0f;
+  return l->internal_data[ii * l->internal_grid.size + jj];
+}
+
 
 static Result_Lagrange lagrange;
 
 static int lagrange_method(void* param) {
   Parameters_Laba2 data = *(Parameters_Laba2*) param; // copy
 
-  float xmin = data.xmin; 
-  float xmax = data.xmax;
-  float p0   = data.p0;
-  float x0   = data.x0;
-  float r0   = data.r0;
-  float ro0  = data.ro0;
-  float gamma = data.gamma;
-  float alpha = data.alpha;
-  float dt   = data.dt;
-  float dx   = data.dx;
+  double xmin = data.xmin; 
+  double xmax = data.xmax;
+  double p0   = data.p0;
+  double x0   = data.x0;
+  double r0   = data.r0;
+  double ro0  = data.ro0;
+  double gamma = data.gamma;
+  double alpha = data.alpha;
+  double a    = data.a;
+  double dt   = data.dt;
+  double dx   = data.dx;
 
   size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
 
+  float dt_f = dt;
   float t = 0;
+  InterlockedExchange((uint*) &lagrange.dt, *(uint*) &dt_f);
 
   {
     // 
     // create a grid.
     //
-    array<float> grid = temp_array(float, NUMBER_OF_POINTS_IN_X);
-    for (size_t i = 0; i < grid.size; i++) {
-      grid[i] = xmin + i*dx;
+    array<double> points_grid = temp_array(double, NUMBER_OF_POINTS_IN_X);
+    for (size_t i = 0; i < points_grid.size; i++) {
+      points_grid[i] = i;
+    }
+
+    array<double> internal_grid = temp_array(double, points_grid.size-1);
+    for (size_t i = 0; i < points_grid.size-1; i++) {
+      float curr = points_grid[i];
+      float next = points_grid[i+1];
+      internal_grid[i] = (curr + next) / 2.0f;
     }
 
     {
       Scoped_Lock lock(&lagrange.data_mutex);
-      lagrange.grid = array_copy(&grid);
+      lagrange.points_grid   = array_copy(&points_grid);
+      lagrange.internal_grid = array_copy(&internal_grid);
     }
-    InterlockedExchange((uint*) &lagrange.dt, *(uint*) &dt);
   }
 
-  array<Voxel> solution = temp_array(Voxel, NUMBER_OF_POINTS_IN_X);
+  array<Velocity_And_Euler> points_solution = temp_array(Velocity_And_Euler, NUMBER_OF_POINTS_IN_X);
+  array<Voxel>            internal_solution = temp_array(Voxel, points_solution.size-1);
 
-#if 0
   {
-    // 
+    //
     // apply initial conditions on t=0
     //
-    for (size_t j = 0; j < solution.size; j++)  {
-      double x = result.grid[j];
+    for (size_t j = 0; j < points_solution.size; j++) {
+      size_t i = lagrange.points_grid[j];
 
-      Vertex* v = &data[j];
-      v->r = ro_t0(x, ro0);
-      v->u =  u_t0(x);
-      v->p =  p_t0(x, p0, x0, r0);
+      Velocity_And_Euler* v = &points_solution[j];
+      v->X = xmin + i*dx;
+      v->u = u_t0(v->X);
+    }
+
+    for (size_t j = 0; j < internal_solution.size; j++) {
+      size_t i = lagrange.internal_grid[j];
+
+      Voxel* v = &internal_solution[j];
+      v->X = xmin + i*dx;
+      v->u = u_t0(v->X);
+      v->r = ro_t0(v->X, ro0);
+      v->u =  u_t0(v->X);
+      v->p =  p_t0(v->X, p0, x0, r0);
+      v->E =  v->p / (v->r * (gamma-1));
     }
 
     {
       Scoped_Lock lock(&lagrange.data_mutex);
-      array_add(&lagrange.data, &solution);
+      array_add(&lagrange.points_data,   &points_solution);
+      array_add(&lagrange.internal_data, &internal_solution);
+      array_add(&lagrange.time, t);
     }
   }
-#endif
-
 
   size_t i = 0;
   while (1) {
     i++;
     t += dt;
 
+    for (size_t j = 0; j < points_solution.size; j++) {
+      if (j == 0 || j == points_solution.size-1) {
+        // 
+        // boundary points
+        //  
+      } else {
+        // 
+        // internal points
+        //
+
+        double next_x = get_grid(&lagrange, j+1);
+        double curr_x = get_grid(&lagrange, j);
+
+        double curr_X = get_point(&lagrange, i-1, j).X;
+
+        double next_u = get_point(&lagrange, i-1, j+1).u;
+        double curr_u = get_point(&lagrange, i-1, j).u;
+        double prev_u = get_point(&lagrange, i-1, j-1).u;
+
+        auto prev = get_internal(&lagrange, i-1, j-1/2.0);
+        auto next = get_internal(&lagrange, i-1, j+1/2.0);
+
+        double V_nc;
+        double V_np;
+        double V_pc;
+        double V_pp;
+
+        if (i > 1) {
+          auto prev_prev = get_internal(&lagrange, i-2, j-1/2.0);
+          auto next_next = get_internal(&lagrange, i-2, j+1/2.0);
+          V_nc = 1 / next.r;
+          V_np = 1 / next_next.r;
+          V_pc = 1 / prev.r;
+          V_pp = 1 / prev_prev.r;
+
+        } else {
+          V_nc = 1 / next.r;
+          V_np = 1 / ro0;
+          V_pc = 1 / prev.r;
+          V_pp = 1 / ro0;
+        }
+
+        double du1 = next_u - curr_u;
+        double du2 = curr_u - prev_u;
+
+        double dq_next = (du1 < 0) ? (2*square(a) / (V_nc + V_np) * square(du1)) : 0;
+        double dq_prev = (du2 < 0) ? (2*square(a) / (V_pc + V_pp) * square(du2)) : 0;
+        double dq = dq_next - dq_prev;
+
+        double dp = next.p - prev.p;
+
+        Velocity_And_Euler* v = &points_solution[j];
+        v->u = curr_u + dt * (-1/ro0 * (dp + dq) / (next_x - curr_x) * pow((curr_X / curr_x), alpha-1.0));
+        v->X = curr_X + dt * v->u;
+      }
+    }
+
+    for (size_t j = 0; j < internal_solution.size; j++) {
+      if (j == 0 || j == internal_solution.size-1) {
+        // 
+        // boundary points
+        //
+      } else {
+        // 
+        // internal points.
+        //
+
+        auto next_x = get_grid(&lagrange, j+1);
+        auto curr_x = get_grid(&lagrange, j);
+
+        auto next_u = points_solution[j+1].u;
+        auto curr_u = points_solution[j].u;
+
+        auto next_X = points_solution[j+1].X;
+        auto curr_X = points_solution[j].X;
+
+        auto next = get_internal(&lagrange, i-1, j+1/2.0);
+
+        Voxel* v = &internal_solution[j];
+        v->X = (next_X + curr_X) / 2.0f; // @Incomplete: lerp();
+        v->u = (next_u + curr_u) / 2.0f; // @Incomplete: lerp();
+        v->r = ro0 * (pow(next_x, alpha) - pow(curr_x, alpha)) / (pow(next_X, alpha) - pow(curr_X, alpha));
+        v->E = next.E - next.p*(1/v->r - 1/next.r);
+        v->p = v->E * v->r * (gamma-1);
+      }
+    }
+
+    size_t j = 0;
+    points_solution[j]   = points_solution[j+1];
+    points_solution[j].u = u_x0(0);
+
+    j = points_solution.size-1;
+    points_solution[j] = points_solution[j-1];
+    points_solution[j].u = u_x0(0);
+
+    j = 0;
+    internal_solution[j] = internal_solution[j+1];
+    internal_solution[j].u = u_x0(0);
+
+    j = internal_solution.size-1;
+    internal_solution[j] = internal_solution[j-1];
+    internal_solution[j].u = u_x0(0);
+
+    {
+      Scoped_Lock lock(&lagrange.data_mutex);
+      array_add(&lagrange.points_data,   &points_solution);
+      array_add(&lagrange.internal_data, &internal_solution);
+      array_add(&lagrange.time, t);
+    }
     InterlockedExchange((uint*) &lagrange.t, *(uint*) &t);
   }
 
@@ -668,7 +827,105 @@ void render_laba1(Memory_Arena* arena, The_Thing* thing) {
 void render_laba2(Memory_Arena* arena, The_Thing* thing) {
   if (thing->clear_the_thing) {
     thing->clear_the_thing = false;
+
+    array_free(&lagrange.points_grid);
+    array_free(&lagrange.internal_grid);
+    array_free(&lagrange.time);
+    array_free(&lagrange.points_data);
+    array_free(&lagrange.internal_data);
+    lagrange.points_grid = {};
+    lagrange.internal_grid = {};
+    lagrange.time = {};
+    lagrange.points_data = {};
+    lagrange.internal_data = {};
+    lagrange.t  = {};
+    lagrange.dt = {};
   }
+
+
+  array<double> grid_to_be_drawn_this_frame;
+  array<Voxel> data_to_be_drawn_this_frame;
+  array<double> X_array;
+  array<double> E_array;
+  array<double> p_array;
+  array<double> u_array;
+  array<double> r_array;
+
+  grid_to_be_drawn_this_frame.allocator = arena->allocator;
+  data_to_be_drawn_this_frame.allocator = arena->allocator;
+  X_array.allocator = arena->allocator;
+  E_array.allocator = arena->allocator;
+  p_array.allocator = arena->allocator;
+  u_array.allocator = arena->allocator;
+  r_array.allocator = arena->allocator;
+
+  {
+    Scoped_Lock mutex(&lagrange.data_mutex);
+
+    size_t n = thing->time / lagrange.dt;
+    size_t needed_data_start =  n    * lagrange.internal_grid.size;
+    size_t needed_data_end   = (n+1) * lagrange.internal_grid.size;
+
+    if (lagrange.internal_data.size && lagrange.internal_grid.size) {
+      array_copy_range(&data_to_be_drawn_this_frame, &lagrange.internal_data, needed_data_start, needed_data_end);
+      array_copy      (&grid_to_be_drawn_this_frame, &lagrange.internal_grid);
+    }
+  }
+
+  size_t data_size = data_to_be_drawn_this_frame.size;
+
+  array_resize(&X_array, data_size);
+  array_resize(&E_array, data_size);
+  array_resize(&p_array, data_size);
+  array_resize(&u_array, data_size);
+  array_resize(&r_array, data_size);
+
+  for (size_t i = 0; i < data_size; i++) {
+    X_array[i] = data_to_be_drawn_this_frame[i].X;
+    E_array[i] = data_to_be_drawn_this_frame[i].E;
+    p_array[i] = data_to_be_drawn_this_frame[i].p;
+    u_array[i] = data_to_be_drawn_this_frame[i].u;
+    r_array[i] = data_to_be_drawn_this_frame[i].r;
+  }
+
+  static const ImVec2 plot_rect_size = ImVec2(300, 300);
+  static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+  if (ImPlot::BeginPlot("Euler coordinate := R(r, t)", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, X_array.data, X_array.size);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Pressure", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
+    ImPlot::EndPlot();
+  }
+
+  if (ImPlot::BeginPlot("Energy", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, E_array.data, E_array.size);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Density", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
+    ImPlot::EndPlot();
+  }
+
 }
 
 // Main code
@@ -726,6 +983,13 @@ int main(int, char**) {
   Input_Float_Settings input_parameters_laba2[] = {
     { "xmin", &parameters_laba2.xmin },
     { "xmax", &parameters_laba2.xmax },
+    { "p0",   &parameters_laba2.p0 },
+    { "x0",   &parameters_laba2.x0 },
+    { "r0",   &parameters_laba2.r0 },
+    { "ro0",  &parameters_laba2.ro0 },
+    { "gamma", &parameters_laba2.gamma },
+    { "alpha", &parameters_laba2.alpha },
+    { "a",     &parameters_laba2.a },
     { "dx",   &parameters_laba2.dx },
     { "dt",   &parameters_laba2.dt },
   };
@@ -744,7 +1008,6 @@ int main(int, char**) {
   The_Thing things[2];
   things[0].thread_proc = methods_laba1[0].proc;
   things[0].thread_parameter = &parameters_laba1;
-
   things[0].name = "Laba 1";
   things[0].method_name = methods_laba1[0].name;
 
@@ -753,9 +1016,10 @@ int main(int, char**) {
   things[0].methods       = methods_laba1;
   things[0].methods_count = array_size(methods_laba1);
 
+
+
   things[1].thread_proc = methods_laba2[0].proc;
   things[1].thread_parameter = &parameters_laba2;
-
   things[1].name        = "Laba 2";
   things[1].method_name = methods_laba2[0].name;
 
@@ -784,6 +1048,7 @@ int main(int, char**) {
     parameters_laba2.ro0  = 1.0f;
     parameters_laba2.gamma = 1.67f;
     parameters_laba2.alpha = 1;
+    parameters_laba2.a     = 1;
     parameters_laba2.dt   = 0.0001f;
     parameters_laba2.dx   = 0.01f;
 
@@ -834,7 +1099,7 @@ int main(int, char**) {
             ImGui::InputFloat(s->name, s->pointer, step, step_fast, format, flags);
           }
 
-          ImGui::SliderFloat("Time", &thing->time, 0, result.t);
+          ImGui::SliderFloat("Time", &thing->time, 0, lagrange.t); // @Incomplete: do the thing!
           ImGui::Checkbox("Auto Fit", &thing->auto_fit);
 
           const char* start_or_continue = thing->thread_is_paused ? "Continue" : "Start";
@@ -917,7 +1182,7 @@ int main(int, char**) {
           if (thing->replay) {
             double m = pow(2.0, thing->replay_multiplier);
             thing->time += m * 1/framerate;
-            thing->time = (thing->time <= result.t) ? thing->time : 0; // @Incomplete: result.t;
+            thing->time = (thing->time <= lagrange.t) ? thing->time : 0; // @Incomplete: do the thing!!!
           }
 
           switch(i) {
