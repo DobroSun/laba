@@ -127,16 +127,6 @@ struct Vertex {
   };
 };
 
-struct Input_Float_Settings {
-  const char* name;
-  float* pointer;
-};
-
-struct Input_Parameter_Settings {
-  Input_Float_Settings* inputs;
-  size_t count;
-};
-
 struct Result {
   Mutex data_mutex = {};
   float dt;
@@ -563,6 +553,11 @@ static int lagrange_method(void* param) {
 
 typedef int (*Thread_Proc)(void*);
 
+struct Input_Float_Settings {
+  const char* name;
+  float* pointer;
+};
+
 struct Method_Spec {
   Thread_Proc proc;
   const char* name;
@@ -574,9 +569,13 @@ struct The_Thing {
   void*       thread_parameter = {};
 
   const char* name = {};
-  const char* method_name = "";
+  const char* method_name = {}; 
 
-  Input_Parameter_Settings settings = {};
+  Input_Float_Settings* inputs       = NULL;
+  size_t                inputs_count = 0;
+
+  Method_Spec* methods       = NULL;
+  size_t       methods_count = 0;
 
   bool thread_is_paused = false; // @Incomplete: move this shit out of here.
   bool clear_the_thing = false;
@@ -585,9 +584,6 @@ struct The_Thing {
   bool replay = false;
   int  replay_multiplier = 0;
   float time = 0;
-
-  Method_Spec* methods       = NULL;
-  size_t       methods_count = 0;
 };
 
 void render_laba1(Memory_Arena* arena, The_Thing* thing) {
@@ -600,6 +596,8 @@ void render_laba1(Memory_Arena* arena, The_Thing* thing) {
     result.grid = {};
     result.data = {};
     result.time = {};
+    result.t  = {};
+    result.dt = {};
   }
 
 
@@ -713,12 +711,6 @@ int main(int, char**) {
   Parameters_Laba1 parameters_laba1 = {};
   Parameters_Laba2 parameters_laba2 = {};
 
-  Method_Spec methods_laba1[] = {
-    { nonconservative_lax_method, "Non Conservative Lax Method" },
-    { euler_upwind_method,        "Euler Upwind Method"         },
-    { conservative_lax_method,    "Conservative Lax Method"     },
-  };
-
   Input_Float_Settings input_parameters_laba1[] = {
     { "xmin", &parameters_laba1.xmin },
     { "xmax", &parameters_laba1.xmax },
@@ -738,24 +730,40 @@ int main(int, char**) {
     { "dt",   &parameters_laba2.dt },
   };
 
+  Method_Spec methods_laba1[] = {
+    { nonconservative_lax_method, "Non Conservative Lax Method" },
+    { euler_upwind_method,        "Euler Upwind Method"         },
+    { conservative_lax_method,    "Conservative Lax Method"     },
+  };
+
+  Method_Spec methods_laba2[] = {
+    { lagrange_method, "Lagrange Method" },
+  };
+
+
   The_Thing things[2];
   things[0].thread_proc = methods_laba1[0].proc;
   things[0].thread_parameter = &parameters_laba1;
-  things[0].settings = { input_parameters_laba1, array_size(input_parameters_laba1) }; 
 
   things[0].name = "Laba 1";
   things[0].method_name = methods_laba1[0].name;
 
+  things[0].inputs        = input_parameters_laba1;
+  things[0].inputs_count  = array_size(input_parameters_laba1);
   things[0].methods       = methods_laba1;
   things[0].methods_count = array_size(methods_laba1);
 
-#if 0
-#endif
-
-  things[1].name = "Laba 2";
-  things[1].thread_proc = lagrange_method;
+  things[1].thread_proc = methods_laba2[0].proc;
   things[1].thread_parameter = &parameters_laba2;
-  things[1].settings = { input_parameters_laba2, array_size(input_parameters_laba2) };
+
+  things[1].name        = "Laba 2";
+  things[1].method_name = methods_laba2[0].name;
+
+  things[1].inputs        = input_parameters_laba2;
+  things[1].inputs_count  = array_size(input_parameters_laba2);
+  things[1].methods       = methods_laba2;
+  things[1].methods_count = array_size(methods_laba2);
+
 
   { // init_program();
     parameters_laba1.xmin = -3.0f;
@@ -816,8 +824,8 @@ int main(int, char**) {
         The_Thing* thing = &things[i];
 
         if (ImGui::CollapsingHeader(thing->name)) {
-          for (size_t i = 0; i < thing->settings.count; i++) {
-            Input_Float_Settings* s = &thing->settings.inputs[i];
+          for (size_t i = 0; i < thing->inputs_count; i++) {
+            Input_Float_Settings* s = &thing->inputs[i];
 
             static const float step      = 0.0f;
             static const float step_fast = 0.0f;
