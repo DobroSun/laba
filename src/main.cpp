@@ -152,7 +152,7 @@ Vertex get_data(Result* r, size_t t, size_t j) {
 
 static Result result;
 
-static int euler_method(void* param) {
+static int euler_upwind_method(void* param) {
   Parameters_Laba1 data = *(Parameters_Laba1*) param; // copy
 
   float xmin = data.xmin; 
@@ -563,106 +563,113 @@ static int lagrange_method(void* param) {
 
 typedef int (*Thread_Proc)(void*);
 
+struct Method_Spec {
+  Thread_Proc proc;
+  const char* name;
+};
+
 struct The_Thing {
   Thread      thread = {};
   Thread_Proc thread_proc = {};
   void*       thread_parameter = {};
 
   const char* name = {};
+  const char* method_name = "";
+
   Input_Parameter_Settings settings = {};
 
-  bool thread_is_paused = false;
+  bool thread_is_paused = false; // @Incomplete: move this shit out of here.
   bool clear_the_thing = false;
-  bool should_show = true;
 
   bool auto_fit = false;
   bool replay = false;
   int  replay_multiplier = 0;
   float time = 0;
+
+  Method_Spec* methods       = NULL;
+  size_t       methods_count = 0;
 };
 
-void render_laba1(Allocator temp_allocator, The_Thing* thing) {
+void render_laba1(Memory_Arena* arena, The_Thing* thing) {
   if (thing->clear_the_thing) {
     thing->clear_the_thing = false;
 
-    dealloc(result.grid.data);
-    dealloc(result.data.data);
+    array_free(&result.grid);
+    array_free(&result.time);
+    array_free(&result.data);
     result.grid = {};
     result.data = {};
+    result.time = {};
   }
 
-  if (thing->should_show) {
-    array<float> grid_to_be_drawn_this_frame;
-    array<Vertex> data_to_be_drawn_this_frame;
-    array<float> p_array;
-    array<float> u_array;
-    array<float> r_array;
+
+  array<float> grid_to_be_drawn_this_frame;
+  array<Vertex> data_to_be_drawn_this_frame;
+  array<float> p_array;
+  array<float> u_array;
+  array<float> r_array;
 
 
-    grid_to_be_drawn_this_frame.allocator = temp_allocator;
-    data_to_be_drawn_this_frame.allocator = temp_allocator;
-    p_array.allocator = temp_allocator;
-    u_array.allocator = temp_allocator;
-    r_array.allocator = temp_allocator;
+  grid_to_be_drawn_this_frame.allocator = arena->allocator;
+  data_to_be_drawn_this_frame.allocator = arena->allocator;
+  p_array.allocator = arena->allocator;
+  u_array.allocator = arena->allocator;
+  r_array.allocator = arena->allocator;
 
 
-    {
-      Scoped_Lock mutex(&result.data_mutex);
+  {
+    Scoped_Lock mutex(&result.data_mutex);
 
-      size_t n = thing->time / result.dt;
-      size_t needed_data_start =  n    * result.grid.size;
-      size_t needed_data_end   = (n+1) * result.grid.size;
+    size_t n = thing->time / result.dt;
+    size_t needed_data_start =  n    * result.grid.size;
+    size_t needed_data_end   = (n+1) * result.grid.size;
 
-      if (result.data.size && result.grid.size) {
-        array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
-        array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
-      }
+    if (result.data.size && result.grid.size) {
+      array_copy_range(&data_to_be_drawn_this_frame, &result.data, needed_data_start, needed_data_end);
+      array_copy      (&grid_to_be_drawn_this_frame, &result.grid);
     }
+  }
 
-    size_t data_size = data_to_be_drawn_this_frame.size;
+  size_t data_size = data_to_be_drawn_this_frame.size;
 
-    array_resize(&p_array, data_size);
-    array_resize(&u_array, data_size);
-    array_resize(&r_array, data_size);
+  array_resize(&p_array, data_size);
+  array_resize(&u_array, data_size);
+  array_resize(&r_array, data_size);
 
-    for (size_t i = 0; i < data_size; i++) {
-      p_array[i] = data_to_be_drawn_this_frame[i].p;
-      u_array[i] = data_to_be_drawn_this_frame[i].u;
-      r_array[i] = data_to_be_drawn_this_frame[i].r;
-    }
+  for (size_t i = 0; i < data_size; i++) {
+    p_array[i] = data_to_be_drawn_this_frame[i].p;
+    u_array[i] = data_to_be_drawn_this_frame[i].u;
+    r_array[i] = data_to_be_drawn_this_frame[i].r;
+  }
 
-    static const ImVec2 plot_rect_size = ImVec2(300, 300);
-    static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
-    if (ImPlot::BeginPlot("Davlenie", plot_rect_size)) {
-      ImPlot::SetupAxes("", "", plot_flags, plot_flags);
-      ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
-      ImPlot::EndPlot();
-    }
+  static const ImVec2 plot_rect_size = ImVec2(300, 300);
+  static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+  if (ImPlot::BeginPlot("Davlenie", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("p(x)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
+    ImPlot::EndPlot();
+  }
 
-    ImGui::SameLine();
+  ImGui::SameLine();
 
-    if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
-      ImPlot::SetupAxes("", "", plot_flags, plot_flags);
-      ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
-      ImPlot::EndPlot();
-    }
+  if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("u(x)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
+    ImPlot::EndPlot();
+  }
 
-    ImGui::SameLine();
+  ImGui::SameLine();
 
-    if (ImPlot::BeginPlot("Ro", plot_rect_size)) {
-      ImPlot::SetupAxes("", "", plot_flags, plot_flags);
-      ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
-      ImPlot::EndPlot();
-    }
+  if (ImPlot::BeginPlot("Ro", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("r(x)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
+    ImPlot::EndPlot();
   }
 }
 
-void render_laba2(Allocator temp_allocator, The_Thing* thing) {
+void render_laba2(Memory_Arena* arena, The_Thing* thing) {
   if (thing->clear_the_thing) {
     thing->clear_the_thing = false;
-  }
-
-  if (thing->should_show) {
   }
 }
 
@@ -706,6 +713,12 @@ int main(int, char**) {
   Parameters_Laba1 parameters_laba1 = {};
   Parameters_Laba2 parameters_laba2 = {};
 
+  Method_Spec methods_laba1[] = {
+    { nonconservative_lax_method, "Non Conservative Lax Method" },
+    { euler_upwind_method,        "Euler Upwind Method"         },
+    { conservative_lax_method,    "Conservative Lax Method"     },
+  };
+
   Input_Float_Settings input_parameters_laba1[] = {
     { "xmin", &parameters_laba1.xmin },
     { "xmax", &parameters_laba1.xmax },
@@ -726,10 +739,18 @@ int main(int, char**) {
   };
 
   The_Thing things[2];
-  things[0].name = "Laba 1";
-  things[0].thread_proc = euler_method;
+  things[0].thread_proc = methods_laba1[0].proc;
   things[0].thread_parameter = &parameters_laba1;
   things[0].settings = { input_parameters_laba1, array_size(input_parameters_laba1) }; 
+
+  things[0].name = "Laba 1";
+  things[0].method_name = methods_laba1[0].name;
+
+  things[0].methods       = methods_laba1;
+  things[0].methods_count = array_size(methods_laba1);
+
+#if 0
+#endif
 
   things[1].name = "Laba 2";
   things[1].thread_proc = lagrange_method;
@@ -763,8 +784,8 @@ int main(int, char**) {
     lagrange.data_mutex = create_mutex();
   }
 
-  Memory_Arena temporary_storage; // @Incomplete: move Allocator into Memory_Arena struct;
-  Allocator temp_allocator = begin_memory_arena(&temporary_storage, KB(200));
+  Memory_Arena temporary_storage;
+  begin_memory_arena(&temporary_storage, KB(200));
 
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   while (!done) {
@@ -795,15 +816,13 @@ int main(int, char**) {
         The_Thing* thing = &things[i];
 
         if (ImGui::CollapsingHeader(thing->name)) {
-          ImGui::Checkbox("Show", &thing->should_show);
-
-          static const float step      = 0.0f;
-          static const float step_fast = 0.0f;
-          static const char* format    = "%.4f";
-          static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
-
           for (size_t i = 0; i < thing->settings.count; i++) {
             Input_Float_Settings* s = &thing->settings.inputs[i];
+
+            static const float step      = 0.0f;
+            static const float step_fast = 0.0f;
+            static const char* format    = "%.4f";
+            static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
             ImGui::InputFloat(s->name, s->pointer, step, step_fast, format, flags);
           }
 
@@ -856,6 +875,12 @@ int main(int, char**) {
 
           ImGui::SameLine();
 
+          if (ImGui::Button("Stop Playing")) {
+            thing->replay = false;
+          }
+
+          ImGui::SameLine();
+
           if (ImGui::Button("x2")) {
             thing->replay_multiplier += 1;
           }
@@ -869,9 +894,17 @@ int main(int, char**) {
           ImGui::SameLine();
 
           ImGui::Text("%s%g", (thing->replay_multiplier >= 0) ? "x" : "/", pow(2.0, abs(thing->replay_multiplier)));
-          if (ImGui::Button("Stop Playing")) {
-            thing->replay = false;
+
+          for (size_t i = 0; i < thing->methods_count; i++) {
+            Method_Spec* method = &thing->methods[i];
+            if (i != 0) { ImGui::SameLine(); }
+            if (ImGui::Button(method->name)) {
+              thing->thread_proc = method->proc;
+              thing->method_name = method->name;
+            }
           }
+
+          ImGui::Text("Using %s", thing->method_name);
 
           if (thing->replay) {
             double m = pow(2.0, thing->replay_multiplier);
@@ -880,8 +913,8 @@ int main(int, char**) {
           }
 
           switch(i) {
-          case 0: render_laba1(temp_allocator, thing); break;
-          case 1: render_laba2(temp_allocator, thing); break;
+          case 0: render_laba1(&temporary_storage, thing); break;
+          case 1: render_laba2(&temporary_storage, thing); break;
           }
         }
       }
