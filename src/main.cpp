@@ -510,7 +510,7 @@ static int lagrange_method(void* param) {
   double dx   = params.dx;
 
   size_t NUMBER_OF_POINTS_IN_X = (xmax - xmin) / dx;
-  size_t MAX_ALLOCATED_MEMORY  = NUMBER_OF_POINTS_IN_X * (sizeof(Velocity_And_Euler) + sizeof(Voxel));
+  size_t MAX_ALLOCATED_MEMORY = NUMBER_OF_POINTS_IN_X* (sizeof(Velocity_And_Euler) + sizeof(Voxel) + sizeof(double));
 
   Memory_Arena arena;
   begin_memory_arena(&arena, MAX_ALLOCATED_MEMORY);
@@ -555,12 +555,15 @@ static int lagrange_method(void* param) {
   reset_memory_arena(&arena);
 
   array<Velocity_And_Euler> points_solution;
-  array<Voxel>            internal_solution;
+  array<Voxel>              internal_solution;
+  array<double>             ques;
   points_solution.allocator   = arena.allocator;
   internal_solution.allocator = arena.allocator;
+  ques.allocator = arena.allocator;
 
   array_resize(&points_solution,   NUMBER_OF_POINTS_IN_X);
   array_resize(&internal_solution, points_solution.size-1);
+  array_resize(&ques, internal_solution.size);
 
   {
     //
@@ -600,10 +603,13 @@ static int lagrange_method(void* param) {
     t += dt;
 
     for (size_t j = 0; j < points_solution.size; j++) {
+      double curr_X = get_point(&lagrange, i-1, j).X;
+
       if (j == 0 || j == points_solution.size-1) {
         // 
         // boundary points
         //  
+
       } else {
         // 
         // internal points
@@ -611,8 +617,6 @@ static int lagrange_method(void* param) {
 
         double next_x = get_grid(&lagrange, j+1);
         double curr_x = get_grid(&lagrange, j);
-
-        double curr_X = get_point(&lagrange, i-1, j).X;
 
         double next_u = get_point(&lagrange, i-1, j+1).u;
         double curr_u = get_point(&lagrange, i-1, j).u;
@@ -649,39 +653,41 @@ static int lagrange_method(void* param) {
         double dq = dq_next - dq_prev;
 
         double dp = next.p - prev.p;
-
+        ques[j] = dq_next;
+        
         Velocity_And_Euler* v = &points_solution[j];
         v->u = curr_u + dt * (-1/ro0 * (dp + dq) / (next_x - curr_x) * pow((curr_X / curr_x), alpha-1.0));
-        v->X = curr_X + dt * v->u;
+        v->X = curr_X + dt * v->u; 
       }
     }
 
     for (size_t j = 0; j < internal_solution.size; j++) {
+      auto next_x = get_grid(&lagrange, j+1);
+      auto curr_x = get_grid(&lagrange, j);
+
+      auto next_u = points_solution[j+1].u;
+      auto curr_u = points_solution[j].u;
+
+      auto next_X = points_solution[j+1].X;
+      auto curr_X = points_solution[j].X;
+
+      auto next = get_internal(&lagrange, i-1, j+1/2.0);
+
       if (j == 0 || j == internal_solution.size-1) {
         // 
         // boundary points
         //
+
       } else {
         // 
         // internal points.
         //
 
-        auto next_x = get_grid(&lagrange, j+1);
-        auto curr_x = get_grid(&lagrange, j);
-
-        auto next_u = points_solution[j+1].u;
-        auto curr_u = points_solution[j].u;
-
-        auto next_X = points_solution[j+1].X;
-        auto curr_X = points_solution[j].X;
-
-        auto next = get_internal(&lagrange, i-1, j+1/2.0);
-
         Voxel* v = &internal_solution[j];
         v->X = (next_X + curr_X) / 2.0f; // @Incomplete: lerp();
         v->u = (next_u + curr_u) / 2.0f; // @Incomplete: lerp();
         v->r = ro0 * (pow(next_x, alpha) - pow(curr_x, alpha)) / (pow(next_X, alpha) - pow(curr_X, alpha));
-        v->E = next.E - next.p*(1/v->r - 1/next.r);
+        v->E = next.E - (next.p + ques[j]) * (1 / v->r - 1 / next.r);
         v->p = v->E * v->r * (gamma-1);
       }
     }
@@ -697,10 +703,12 @@ static int lagrange_method(void* param) {
     j = 0;
     internal_solution[j] = internal_solution[j+1];
     internal_solution[j].u = u_x0(0);
+    internal_solution[j].p = 0;
 
     j = internal_solution.size-1;
     internal_solution[j] = internal_solution[j-1];
     internal_solution[j].u = u_x0(0);
+    internal_solution[j].p = 0;
 
     {
       Scoped_Lock lock(&lagrange.data_mutex);
@@ -743,7 +751,7 @@ struct The_Thing {
   bool thread_is_paused = false; // @Incomplete: move this shit out of here.
   bool clear_the_thing = false;
 
-  bool auto_fit = false;
+  bool auto_fit = true;
   bool replay = false;
   int  replay_multiplier = 0;
 
@@ -757,12 +765,12 @@ void render_laba1(Memory_Arena* arena, The_Thing* thing) {
   if (thing->clear_the_thing) {
     thing->clear_the_thing = false;
 
-    array_free(&result.grid);
-    array_free(&result.time);
-    array_free(&result.data);
-    result.grid = {};
-    result.data = {};
-    result.time = {};
+    result.grid.size = 0;
+    result.data.size = 0;
+    result.time.size = 0;
+
+    thing->global_t = 0;
+    thing->dt       = 0;
   }
 
 
@@ -805,8 +813,9 @@ void render_laba1(Memory_Arena* arena, The_Thing* thing) {
     r_array[i] = data_to_be_drawn_this_frame[i].r;
   }
 
+         const bool auto_fit = thing->auto_fit;
   static const ImVec2 plot_rect_size = ImVec2(300, 300);
-  static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+  static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
   if (ImPlot::BeginPlot("Pressure", plot_rect_size)) {
     ImPlot::SetupAxes("", "", plot_flags, plot_flags);
     ImPlot::PlotLine("p(x, t)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
@@ -834,16 +843,14 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
   if (thing->clear_the_thing) {
     thing->clear_the_thing = false;
 
-    array_free(&lagrange.points_grid);
-    array_free(&lagrange.internal_grid);
-    array_free(&lagrange.time);
-    array_free(&lagrange.points_data);
-    array_free(&lagrange.internal_data);
-    lagrange.points_grid = {};
-    lagrange.internal_grid = {};
-    lagrange.time = {};
-    lagrange.points_data = {};
-    lagrange.internal_data = {};
+    lagrange.points_grid.size = 0;
+    lagrange.internal_grid.size = 0;
+    lagrange.time.size = 0;
+    lagrange.points_data.size = 0;
+    lagrange.internal_data.size = 0;
+
+    thing->global_t = 0;
+    thing->dt       = 0;
   }
 
 
@@ -892,17 +899,16 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
     r_array[i] = data_to_be_drawn_this_frame[i].r;
   }
 
+         const bool auto_fit = thing->auto_fit;
   static const ImVec2 plot_rect_size = ImVec2(300, 300);
-  static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : 0;
+  static const auto   plot_flags = auto_fit ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
   if (ImPlot::BeginPlot("Euler coordinate R(r, t)", plot_rect_size)) {
     ImPlot::SetupAxes("", "", plot_flags, plot_flags);
     ImPlot::PlotLine("R(r, t)", grid_to_be_drawn_this_frame.data, X_array.data, X_array.size);
     ImPlot::EndPlot();
   }
 
-  ImGui::SameLine();
-
-  if (ImPlot::BeginPlot("Velocity", plot_rect_size)) {
+  if (ImPlot::BeginPlot("Velocity : u(r, t)", plot_rect_size)) {
     ImPlot::SetupAxes("", "", plot_flags, plot_flags);
     ImPlot::PlotLine("u(r, t)", grid_to_be_drawn_this_frame.data, u_array.data, u_array.size);
     ImPlot::EndPlot();
@@ -910,13 +916,15 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
 
   ImGui::SameLine();
 
-  if (ImPlot::BeginPlot("Pressure", plot_rect_size)) {
+  if (ImPlot::BeginPlot("Pressure : p(r, t)", plot_rect_size)) {
     ImPlot::SetupAxes("", "", plot_flags, plot_flags);
     ImPlot::PlotLine("p(r, t)", grid_to_be_drawn_this_frame.data, p_array.data, p_array.size);
     ImPlot::EndPlot();
   }
 
-  if (ImPlot::BeginPlot("Energy", plot_rect_size)) {
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Energy : E(r, t)", plot_rect_size)) {
     ImPlot::SetupAxes("", "", plot_flags, plot_flags);
     ImPlot::PlotLine("E(r, t)", grid_to_be_drawn_this_frame.data, E_array.data, E_array.size);
     ImPlot::EndPlot();
@@ -924,9 +932,39 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
 
   ImGui::SameLine();
 
-  if (ImPlot::BeginPlot("Density", plot_rect_size)) {
+  if (ImPlot::BeginPlot("Density : ro(r, t)", plot_rect_size)) {
     ImPlot::SetupAxes("", "", plot_flags, plot_flags);
     ImPlot::PlotLine("ro(r, t)", grid_to_be_drawn_this_frame.data, r_array.data, r_array.size);
+    ImPlot::EndPlot();
+  }
+
+  if (ImPlot::BeginPlot("Velocity : u(R, t)", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("u(R, t)", X_array.data, u_array.data, u_array.size);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Pressure : p(R, t)", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("p(R, t)", X_array.data, p_array.data, p_array.size);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Energy : E(R, t)", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("E(R, t)", X_array.data, E_array.data, E_array.size);
+    ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  if (ImPlot::BeginPlot("Density : ro(R, t)", plot_rect_size)) {
+    ImPlot::SetupAxes("", "", plot_flags, plot_flags);
+    ImPlot::PlotLine("ro(R, t)", X_array.data, r_array.data, r_array.size);
     ImPlot::EndPlot();
   }
 }
@@ -1054,7 +1092,7 @@ int main(int, char**) {
     parameters_laba2.ro0  = 1.0f;
     parameters_laba2.gamma = 1.67f;
     parameters_laba2.alpha = 1;
-    parameters_laba2.a     = 1;
+    parameters_laba2.a     = 2.3;
     parameters_laba2.dt   = 0.0001f;
     parameters_laba2.dx   = 0.01f;
 
@@ -1064,7 +1102,7 @@ int main(int, char**) {
   }
 
   Memory_Arena temporary_storage;
-  begin_memory_arena(&temporary_storage, KB(200));
+  begin_memory_arena(&temporary_storage, MB(200));
 
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   while (!done) {
@@ -1188,8 +1226,9 @@ int main(int, char**) {
           if (thing->replay) {
             double m = pow(2.0, thing->replay_multiplier);
             thing->time += m * 1/framerate;
-            thing->time = (thing->time <= thing->global_t) ? thing->time : 0;
           }
+
+          thing->time = (thing->time <= thing->global_t) ? thing->time : 0;
 
           switch(i) {
           case 0: render_laba1(&temporary_storage, thing); break;
