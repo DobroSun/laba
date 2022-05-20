@@ -969,6 +969,64 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
   }
 }
 
+void render_laba3(Memory_Arena* arena, The_Thing* thing) {
+  static float values1[7][7]  = {{0.8f, 2.4f, 2.5f, 3.9f, 0.0f, 4.0f, 0.0f},
+                                  {2.4f, 0.0f, 4.0f, 1.0f, 2.7f, 0.0f, 0.0f},
+                                  {1.1f, 2.4f, 0.8f, 4.3f, 1.9f, 4.4f, 0.0f},
+                                  {0.6f, 0.0f, 0.3f, 0.0f, 3.1f, 0.0f, 0.0f},
+                                  {0.7f, 1.7f, 0.6f, 2.6f, 2.2f, 6.2f, 0.0f},
+                                  {1.3f, 1.2f, 0.0f, 0.0f, 0.0f, 3.2f, 5.1f},
+                                  {0.1f, 2.0f, 0.0f, 1.4f, 0.0f, 1.9f, 6.3f}};
+  static float scale_min       = 0;
+  static float scale_max       = 6.3f;
+  static const char* xlabels[] = {"C1","C2","C3","C4","C5","C6","C7"};
+  static const char* ylabels[] = {"R1","R2","R3","R4","R5","R6","R7"};
+
+  srand((unsigned int)(ImGui::GetTime()*1000000));
+
+  static ImPlotColormap map = ImPlotColormap_Viridis;
+
+  ImGui::SameLine();
+  ImGui::LabelText("##Colormap Index", "%s", "Change Colormap");
+  ImGui::SetNextItemWidth(225);
+
+  ImGui::DragFloatRange2("Min / Max",&scale_min, &scale_max, 0.01f, -20, 20);
+  static ImPlotAxisFlags axes_flags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks;
+
+  ImPlot::PushColormap(map);
+
+  if (ImPlot::BeginPlot("##Heatmap1",ImVec2(225,225),ImPlotFlags_NoLegend|ImPlotFlags_NoMouseText)) {
+      ImPlot::SetupAxes(NULL, NULL, axes_flags, axes_flags);
+      ImPlot::SetupAxisTicks(ImAxis_X1, 0 + 1.0/14.0, 1 - 1.0/14.0, 7, xlabels);
+      ImPlot::SetupAxisTicks(ImAxis_Y1, 1 - 1.0/14.0, 0 + 1.0/14.0, 7, ylabels);
+      ImPlot::PlotHeatmap("heat", values1[0], 7, 7, scale_min, scale_max);
+      ImPlot::EndPlot();
+  }
+
+  ImGui::SameLine();
+
+  ImPlot::ColormapScale("##HeatScale",scale_min, scale_max, ImVec2(60,225));
+
+  ImGui::SameLine();
+
+  static const int size = 200;
+  static double values2[size*size];
+
+  for (size_t i = 0; i < static_array_size(values2); i++) {
+    values2[i] = ImPlot::RandomRange(scale_min, scale_max);
+  }
+
+  if (ImPlot::BeginPlot("##Heatmap2",ImVec2(225,225))) {
+    ImPlot::SetupAxes(NULL, NULL, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+    ImPlot::SetupAxesLimits(-1, 1,-1, 1);
+
+    ImPlot::PlotHeatmap("heat1",values2, size, size, scale_min, scale_max, NULL);
+    ImPlot::PlotHeatmap("heat2",values2, size, size, scale_min, scale_max, NULL, ImPlotPoint(-1,-1), ImPlotPoint(0,0));
+    ImPlot::EndPlot();
+  }
+
+  ImPlot::PopColormap();
+}
 
 int main(int, char**) {
   WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
@@ -1044,7 +1102,7 @@ int main(int, char**) {
     { lagrange_method, "Lagrange Method" },
   };
 
-  The_Thing things[2];
+  The_Thing things[3];
 
   Thread_Data1 thread_data1 = { &parameters_laba1, &things[0].global_t, &things[0].dt };
   Thread_Data2 thread_data2 = { &parameters_laba2, &things[1].global_t, &things[1].dt };
@@ -1054,24 +1112,22 @@ int main(int, char**) {
   things[0].thread_parameter = &thread_data1;
   things[0].name = "Laba 1";
   things[0].method_name = methods_laba1[0].name;
-
   things[0].inputs        = input_parameters_laba1;
   things[0].inputs_count  = array_size(input_parameters_laba1);
   things[0].methods       = methods_laba1;
   things[0].methods_count = array_size(methods_laba1);
 
 
-
   things[1].thread_proc = methods_laba2[0].proc;
   things[1].thread_parameter = &thread_data2;
   things[1].name        = "Laba 2";
   things[1].method_name = methods_laba2[0].name;
-
   things[1].inputs        = input_parameters_laba2;
   things[1].inputs_count  = array_size(input_parameters_laba2);
   things[1].methods       = methods_laba2;
   things[1].methods_count = array_size(methods_laba2);
 
+  things[2].name = "Laba 3";
 
   { // init_program();
     parameters_laba1.xmin = -3.0f;
@@ -1233,6 +1289,7 @@ int main(int, char**) {
           switch(i) {
           case 0: render_laba1(&temporary_storage, thing); break;
           case 1: render_laba2(&temporary_storage, thing); break;
+          case 2: render_laba3(&temporary_storage, thing); break;
           }
         }
       }
