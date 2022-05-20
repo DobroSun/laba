@@ -90,34 +90,50 @@ double u_x0(double t) {
 }
 
 struct Parameters_Laba1 {
-  float xmin = 0.0f;
-  float xmax = 0.0f;
+  float xmin;
+  float xmax;
 
-  float p0  = 0.0f;
-  float x0  = 0.0f;
-  float r0  = 0.0f;
-  float ro0 = 0.0f;
-  float gamma = 0.0f;
+  float p0;
+  float x0;
+  float r0;
+  float ro0;
+  float gamma;
 
-  float dt = 0.0f;
-  float dx = 0.0f;
+  float dt;
+  float dx;
 };
 
 struct Parameters_Laba2 {
-  float xmin = 0.0f;
-  float xmax = 0.0f;
+  float xmin;
+  float xmax;
 
-  float p0  = 0.0f;
-  float x0  = 0.0f;
-  float r0  = 0.0f;
-  float ro0 = 0.0f;
-  float gamma = 0.0f;
-  float alpha = 0;
+  float p0;
+  float x0;
+  float r0;
+  float ro0;
+  float gamma;
+  float alpha;
 
-  float a = 0;
+  float a;
 
-  float dt = 0.0f;
-  float dx = 0.0f;
+  float dt;
+  float dx;
+};
+
+struct Parameters_Laba3 {
+  float xmin;
+  float xmax;
+  float ymin;
+  float ymax;
+  float center_x;
+  float center_y;
+  float a;
+  float b;
+  float Re;
+  float U0;
+  float dx;
+  float dy;
+  float dt;
 };
 
 struct Thread_Data1 {
@@ -132,6 +148,13 @@ struct Thread_Data2 {
   double* dt;
 };
 
+struct Thread_Data3 {
+  Parameters_Laba3* parameters;
+  double* global_t;
+  double* dt;
+};
+
+
 
 struct Vertex {
   double r;
@@ -142,6 +165,27 @@ struct Vertex {
   };
 };
 
+struct Voxel {
+  double X;
+  double u;
+  double r;
+  double p;
+  double E;
+};
+
+struct Velocity_And_Euler {
+  double X;
+  double u;
+};
+
+
+struct Voxel2d {
+  double eps;
+  double psi;
+  double u;
+  double v;
+};
+
 struct Result {
   Mutex data_mutex = {};
 
@@ -150,11 +194,65 @@ struct Result {
   array<Vertex> data; // this is going to evolve in time. size := NUMBER_OF_LAYERS * grid.size()
 };
 
+struct Result_Lagrange {
+  Mutex data_mutex = {};
+
+  array<double> time;
+  array<double>   points_grid; 
+  array<double> internal_grid;
+
+  array<Velocity_And_Euler> points_data;
+  array<Voxel>            internal_data;
+};
+
+struct Vec2 {
+  double x;
+  double y;
+};
+
+struct Result2d {
+  Mutex data_mutex = {};
+
+  array<Voxel2d> data;
+  //array<double>  time; // @CleanUp: actually we never use time, because our dt is always const. So we can just remove time from Result, Result_Lagrange, Result2d.
+
+  size_t size_x, size_y;
+};
+
 Vertex get_data(Result* r, size_t i, size_t j) {
   return r->data[i * r->grid.size + j];
 }
 
+double get_grid(Result_Lagrange* l, size_t j) {
+  return l->points_grid[j];
+}
+
+Velocity_And_Euler get_point(Result_Lagrange* l, size_t i, size_t j) {
+  return l->points_data[i * l->points_grid.size + j];
+}
+
+Voxel get_internal(Result_Lagrange* l, float i, float j) {
+  size_t ii = i;
+  size_t jj = j - 1/2.0f;
+  return l->internal_data[ii * l->internal_grid.size + jj];
+}
+
+Voxel2d get_data(Result2d* r, size_t i, size_t j, size_t t) {
+  return r->data[t * (r->size_x * r->size_y) + i * r->size_y + j];
+}
+
+Voxel2d* get_pointer(Result2d* r, array<Voxel2d>* v, size_t i, size_t j) {
+  return &v->data[i * r->size_y + j];
+}
+
+Voxel2d get_data(Result2d* r, array<Voxel2d>* v, size_t i, size_t j) {
+  return *get_pointer(r, v, i, j);
+}
+
 static Result result;
+static Result_Lagrange lagrange;
+static Result2d result2d;
+
 
 static int euler_upwind_method(void* param) {
   Thread_Data1* data = (Thread_Data1*) param;
@@ -452,47 +550,6 @@ static int conservative_lax_method(void* param) {
   return 0;
 }
 
-struct Voxel {
-  double X;
-  double u;
-  double r;
-  double p;
-  double E;
-};
-
-struct Velocity_And_Euler {
-  double X;
-  double u;
-};
-
-struct Result_Lagrange {
-  Mutex data_mutex = {};
-
-  array<double> time;
-  array<double>   points_grid; 
-  array<double> internal_grid;
-
-  array<Velocity_And_Euler> points_data;
-  array<Voxel>            internal_data;
-};
-
-double get_grid(Result_Lagrange* l, size_t j) {
-  return l->points_grid[j];
-}
-
-Velocity_And_Euler get_point(Result_Lagrange* l, size_t i, size_t j) {
-  return l->points_data[i * l->points_grid.size + j];
-}
-
-Voxel get_internal(Result_Lagrange* l, float i, float j) {
-  size_t ii = i;
-  size_t jj = j - 1/2.0f;
-  return l->internal_data[ii * l->internal_grid.size + jj];
-}
-
-
-static Result_Lagrange lagrange;
-
 static int lagrange_method(void* param) {
   Thread_Data2* data = (Thread_Data2*) param;
   Parameters_Laba2 params = *data->parameters; // copy
@@ -716,6 +773,259 @@ static int lagrange_method(void* param) {
       array_add(&lagrange.internal_data, &internal_solution);
       array_add(&lagrange.time, t);
     }
+    InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
+  }
+
+  return 0;
+}
+
+static int method_2d(void* param) {
+  Thread_Data3* data = (Thread_Data3*) param;
+  Parameters_Laba3 params = *data->parameters; // copy
+
+  double xmin = params.xmin;
+  double xmax = params.xmax;
+  double ymin = params.ymin;
+  double ymax = params.ymax;
+  double center_x = params.center_x;
+  double center_y = params.center_y;
+  double b_width  = params.a;
+  double b_height = params.b;
+  double Re = params.Re;
+  double U0 = params.U0;
+  double dx = params.dx;
+  double dy = params.dy;
+  double dt = params.dt;
+  double t = 0.0;
+
+  size_t NUMBER_OF_POINTS_IN_X      = (xmax - xmin) / dx;
+  size_t NUMBER_OF_POINTS_IN_Y      = (ymax - ymin) / dy;
+  size_t NUMBER_OF_POINTS_PER_LAYER = NUMBER_OF_POINTS_IN_X * NUMBER_OF_POINTS_IN_Y;
+  size_t MAX_ALLOCATED_MEMORY = NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel2d);
+
+  size_t center_x_index = (center_x - xmin) / (xmax - xmin) * NUMBER_OF_POINTS_IN_X;
+  size_t center_y_index = (center_y - ymin) / (ymax - ymin) * NUMBER_OF_POINTS_IN_Y;
+
+  size_t width_index  = b_width  / dx;
+  size_t height_index = b_height / dy;
+
+  size_t left   = center_x_index - width_index;
+  size_t right  = center_x_index + width_index;
+  size_t top    = center_y_index - height_index;;
+  size_t bottom = center_y_index + height_index;
+
+  // @Incomplete: x,y and i,j are inverted. How do I deal with that?
+
+  InterlockedExchange64((int64*)  data->dt,        *(int64*) &dt);
+  InterlockedExchange64((int64*)  data->global_t,  *(int64*) &t); 
+  InterlockedExchange64((int64*) &result2d.size_x, *(int64*) &NUMBER_OF_POINTS_IN_X);
+  InterlockedExchange64((int64*) &result2d.size_y, *(int64*) &NUMBER_OF_POINTS_IN_Y);
+
+  Memory_Arena arena;
+  begin_memory_arena(&arena, MAX_ALLOCATED_MEMORY);
+  defer { end_memory_arena(&arena); }; // @MemoryLeak: @Incomplete: what happens to this memory if we kill a thread? 
+
+  reset_memory_arena(&arena);
+
+  array<Voxel2d> temp_data;
+  temp_data.allocator = arena.allocator;
+
+  array_resize(&temp_data, NUMBER_OF_POINTS_PER_LAYER);
+
+  { // initial conditions (t = 0).
+    for (size_t i = 0; i < NUMBER_OF_POINTS_PER_LAYER; i++) {
+      temp_data[i].eps = 0;
+      temp_data[i].psi = 0;
+      temp_data[i].u   = 0;
+      temp_data[i].v   = 0;
+    }
+    {
+      Scoped_Lock lock(&result2d.data_mutex);
+      array_add(&result2d.data, &temp_data);
+    }
+
+    t += dt;
+    InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
+  }
+
+  size_t k = 0;
+  while (1) {
+
+    memcpy(temp_data.data, result2d.data.data + k*NUMBER_OF_POINTS_PER_LAYER, NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel2d));
+
+    for (size_t i = 1; i < NUMBER_OF_POINTS_IN_X-1; i++) {
+      for (size_t j = 1; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
+        size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
+
+        Voxel2d v_cur = get_data(&result2d, i,   j, k);
+        Voxel2d v_ip1 = get_data(&result2d, i+1, j, k);
+        Voxel2d v_im1 = get_data(&result2d, i-1, j, k);
+        Voxel2d v_jp1 = get_data(&result2d, i, j+1, k);
+        Voxel2d v_jm1 = get_data(&result2d, i, j-1, k);
+
+        double u = v_cur.u;
+        double v = v_cur.v;
+
+        double a = u > 0 ? 0 : 1;
+        double b = v > 0 ? 0 : 1;
+
+        double eps = v_cur.eps - dt / dx * u * (1 - a) * (v_cur.eps - v_im1.eps) - dt / dx * a * u * (v_ip1.eps - v_cur.eps) - dt / dy * v * (1 - b) * (v_cur.eps - v_jm1.eps) - dt / dy * b * v * (v_jp1.eps - v_cur.eps) + dt / Re * ((v_ip1.eps - 2*v_cur.eps + v_im1.eps) / (dx*dx) + (v_jp1.eps - 2*v_cur.eps + v_jm1.eps) / (dy*dy)); 
+
+        if (i >= left && i <= right && j >= top && j <= bottom) {
+          continue;
+        } else {
+          temp_data[idx].eps = eps;
+        }
+      }
+    }
+
+    for (size_t k = 0; k < 5; k++) { // @Incomplete: do something about this.
+      // 
+      // One iteration by Jacobi.
+      // 
+      for (size_t i = 1; i < NUMBER_OF_POINTS_IN_X-1; i++) {
+        for (size_t j = 1; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
+          size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
+
+          Voxel2d v_cur = get_data(&result2d, &temp_data, i,   j);
+          Voxel2d v_ip1 = get_data(&result2d, &temp_data, i+1, j);
+          Voxel2d v_im1 = get_data(&result2d, &temp_data, i-1, j);
+          Voxel2d v_jp1 = get_data(&result2d, &temp_data, i, j+1);
+          Voxel2d v_jm1 = get_data(&result2d, &temp_data, i, j-1);
+
+          double q   = (dx*dx) / (dy*dy);
+          double psi = (v_ip1.psi + v_im1.psi + q*(v_jp1.psi + v_jm1.psi)) / (2.0 + 2.0*q) - dx*dx / (2.0 + 2.0*q) * v_cur.eps;
+
+          if (i >= left && i <= right && j >= top && j <= bottom) {
+            continue;
+          } else {
+            temp_data[idx].psi = psi;
+          }
+        }
+      }
+    }
+
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+      for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
+        size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
+
+        Voxel2d v_cur = get_data(&result2d, &temp_data, i,   j);
+        Voxel2d v_jp1 = get_data(&result2d, &temp_data, i, j+1);
+
+        double u = (v_jp1.psi - v_cur.psi) / dy;
+
+        if (i >= left && i <= right && j >= top && j <= bottom) {
+          continue;
+        } else {
+          temp_data[idx].u = u;
+        }
+      }
+    }
+
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X-1; i++) {
+      for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y; j++) {
+        size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
+
+        Voxel2d v_cur = get_data(&result2d, &temp_data, i,   j);
+        Voxel2d v_ip1 = get_data(&result2d, &temp_data, i+1, j);
+
+        double v = -(v_ip1.psi - v_cur.psi) / dx;
+
+        if (i >= left && i <= right && j >= top && j <= bottom) {
+          continue;
+        } else {
+          temp_data[idx].v = v;
+        }
+      }
+    }
+
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X-1; i++) {
+      size_t idx;
+      size_t jd1;
+
+      idx = i * NUMBER_OF_POINTS_IN_Y + 0; 
+      jd1 = i * NUMBER_OF_POINTS_IN_Y + 1;
+
+      auto r = temp_data.data;
+      temp_data[idx].eps = 2 * (r[jd1].psi - r[idx].psi - U0*dy) / (dy*dy);
+      temp_data[idx].psi = r[jd1].psi - U0*dy;
+      temp_data[idx].u   = U0;
+      temp_data[idx].v   = 0;
+
+      idx = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-1); 
+      jd1 = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-2);
+      temp_data[idx].eps = 2.0 * (r[jd1].psi - r[idx].psi + U0*dy) / (dy*dy);
+      temp_data[idx].psi = r[jd1].psi + U0*dy;
+      temp_data[idx].u   = U0;
+      temp_data[idx].v   = 0;
+    }
+
+    for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y; j++) {
+      size_t idx;
+      size_t id1;
+
+      idx = 0 * NUMBER_OF_POINTS_IN_Y + j; 
+      id1 = 1 * NUMBER_OF_POINTS_IN_Y + j;
+      temp_data[idx].eps = temp_data[id1].eps;
+      temp_data[idx].psi = temp_data[id1].psi;
+
+      idx = (NUMBER_OF_POINTS_IN_X-1) * NUMBER_OF_POINTS_IN_Y + j; 
+      id1 = (NUMBER_OF_POINTS_IN_X-2) * NUMBER_OF_POINTS_IN_Y + j;
+      temp_data[idx].eps = temp_data[id1].eps;
+      temp_data[idx].psi = temp_data[id1].psi;
+    }
+
+    for (size_t j = left; j <= right; j++) {
+      Voxel2d* jt = get_pointer(&result2d, &temp_data, j, top);
+      Voxel2d* jb = get_pointer(&result2d, &temp_data, j, bottom);
+
+      jt->u   = 0;
+      jt->v   = 0;
+      jt->psi = 0;
+      jt->eps = 2.0 * get_data(&result2d, &temp_data, j, top-1).psi / (dy*dy);
+
+      jb->u   = 0;
+      jb->v   = 0;
+      jb->psi = 0;
+      jb->eps = 2.0 * get_data(&result2d, &temp_data, j, bottom+1).psi / (dy*dy);
+    }
+
+    for (size_t i = top; i <= bottom; i++) {
+      Voxel2d* il = get_pointer(&result2d, &temp_data, left,  i);
+      Voxel2d* ir = get_pointer(&result2d, &temp_data, right, i);
+
+      il->u   = 0;
+      il->v   = 0;
+      il->psi = 0;
+      il->eps = 2.0 * get_data(&result2d, &temp_data, left-1, i).psi / (dx*dx);;
+
+      ir->u   = 0;
+      ir->v   = 0;
+      ir->psi = 0;
+      ir->eps = 2.0 * get_data(&result2d, &temp_data, right+1, i).psi / (dx*dx);
+    }
+
+    {
+      get_pointer(&result2d, &temp_data, left, bottom)->eps  = 2.0 * get_pointer(&result2d, &temp_data, left, bottom+1)->psi / (dy*dy)
+                                                             + 2.0 * get_pointer(&result2d, &temp_data, left-1, bottom)->psi / (dx*dx);
+      get_pointer(&result2d, &temp_data, right, bottom)->eps = 2.0 * get_pointer(&result2d, &temp_data, right, bottom+1)->psi / (dy*dy)
+                                                             + 2.0 * get_pointer(&result2d, &temp_data, right+1, bottom)->psi / (dx*dx);
+
+      get_pointer(&result2d, &temp_data, left, top)->eps  = 2.0 * get_pointer(&result2d, &temp_data, left, top-1)->psi / (dy*dy)
+                                                          + 2.0 * get_pointer(&result2d, &temp_data, left-1, top)->psi / (dx*dx);
+      get_pointer(&result2d, &temp_data, right, top)->eps = 2.0 * get_pointer(&result2d, &temp_data, right, top-1)->psi / (dy*dy)
+                                                          + 2.0 * get_pointer(&result2d, &temp_data, right+1, top)->psi / (dx*dx);
+
+    }
+
+    {
+      Scoped_Lock lock(&result2d.data_mutex);
+      array_add(&result2d.data, &temp_data);
+    }
+
+    k += 1;
+    t += dt;
+
     InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
   }
 
@@ -970,62 +1280,69 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
 }
 
 void render_laba3(Memory_Arena* arena, The_Thing* thing) {
-  static float values1[7][7]  = {{0.8f, 2.4f, 2.5f, 3.9f, 0.0f, 4.0f, 0.0f},
-                                  {2.4f, 0.0f, 4.0f, 1.0f, 2.7f, 0.0f, 0.0f},
-                                  {1.1f, 2.4f, 0.8f, 4.3f, 1.9f, 4.4f, 0.0f},
-                                  {0.6f, 0.0f, 0.3f, 0.0f, 3.1f, 0.0f, 0.0f},
-                                  {0.7f, 1.7f, 0.6f, 2.6f, 2.2f, 6.2f, 0.0f},
-                                  {1.3f, 1.2f, 0.0f, 0.0f, 0.0f, 3.2f, 5.1f},
-                                  {0.1f, 2.0f, 0.0f, 1.4f, 0.0f, 1.9f, 6.3f}};
-  static float scale_min       = 0;
-  static float scale_max       = 6.3f;
-  static const char* xlabels[] = {"C1","C2","C3","C4","C5","C6","C7"};
-  static const char* ylabels[] = {"R1","R2","R3","R4","R5","R6","R7"};
+  if (thing->clear_the_thing) {
+    thing->clear_the_thing = false;
 
-  srand((unsigned int)(ImGui::GetTime()*1000000));
+    result2d.data.size = 0;
+    result2d.size_x = 0;
+    result2d.size_y = 0;
 
-  static ImPlotColormap map = ImPlotColormap_Viridis;
+    thing->global_t = 0;
+    thing->dt       = 0;
+  }
 
-  ImGui::SameLine();
-  ImGui::LabelText("##Colormap Index", "%s", "Change Colormap");
-  ImGui::SetNextItemWidth(225);
 
-  ImGui::DragFloatRange2("Min / Max",&scale_min, &scale_max, 0.01f, -20, 20);
-  static ImPlotAxisFlags axes_flags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks;
+  ImPlotColormap  map = ImPlotColormap_Plasma;
+  ImPlotAxisFlags axes_flags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks;
 
   ImPlot::PushColormap(map);
 
-  if (ImPlot::BeginPlot("##Heatmap1",ImVec2(225,225),ImPlotFlags_NoLegend|ImPlotFlags_NoMouseText)) {
-      ImPlot::SetupAxes(NULL, NULL, axes_flags, axes_flags);
-      ImPlot::SetupAxisTicks(ImAxis_X1, 0 + 1.0/14.0, 1 - 1.0/14.0, 7, xlabels);
-      ImPlot::SetupAxisTicks(ImAxis_Y1, 1 - 1.0/14.0, 0 + 1.0/14.0, 7, ylabels);
-      ImPlot::PlotHeatmap("heat", values1[0], 7, 7, scale_min, scale_max);
-      ImPlot::EndPlot();
-  }
+  ImPlot::ColormapScale("##HeatScale", 0.0, 1.0, ImVec2(60,600));
 
   ImGui::SameLine();
 
-  ImPlot::ColormapScale("##HeatScale",scale_min, scale_max, ImVec2(60,225));
+  array<Voxel2d> heatmap_to_draw_this_frame;
+  array<double> velocity;
 
-  ImGui::SameLine();
+  size_t size_x;
+  size_t size_y;
 
-  static const int size = 200;
-  static double values2[size*size];
+  heatmap_to_draw_this_frame.allocator = arena->allocator;
+  velocity.allocator = arena->allocator;
 
-  for (size_t i = 0; i < static_array_size(values2); i++) {
-    values2[i] = ImPlot::RandomRange(scale_min, scale_max);
+
+  {
+    Scoped_Lock mutex(&result2d.data_mutex);
+
+    size_x = result2d.size_x;
+    size_y = result2d.size_y;
+
+    size_t n = thing->time / thing->dt;
+    size_t start =  n    * size_x * size_y;
+    size_t end   = (n+1) * size_x * size_y;
+
+    if (result2d.data.size && start <= result2d.data.size && end <= result2d.data.size) { // @Incomplete: wtf is that.
+      array_copy_range(&heatmap_to_draw_this_frame, &result2d.data, start, end);
+    }
   }
 
-  if (ImPlot::BeginPlot("##Heatmap2",ImVec2(225,225))) {
+  array_resize(&velocity, heatmap_to_draw_this_frame.size);
+
+  for (size_t i = 0; i < velocity.size; i++) {
+    double u = heatmap_to_draw_this_frame[i].u;
+    double v = heatmap_to_draw_this_frame[i].v;
+
+    velocity[i] = sqrt(u*u + v*v);
+  }
+
+  if (ImPlot::BeginPlot("##Heatmap2", ImVec2(600,600))) {
     ImPlot::SetupAxes(NULL, NULL, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
-    ImPlot::SetupAxesLimits(-1, 1,-1, 1);
-
-    ImPlot::PlotHeatmap("heat1",values2, size, size, scale_min, scale_max, NULL);
-    ImPlot::PlotHeatmap("heat2",values2, size, size, scale_min, scale_max, NULL, ImPlotPoint(-1,-1), ImPlotPoint(0,0));
+    ImPlot::PlotHeatmap("heat1", velocity.data, size_x, size_y, 0.0f, 1.0f, NULL);
     ImPlot::EndPlot();
   }
 
   ImPlot::PopColormap();
+
 }
 
 int main(int, char**) {
@@ -1065,6 +1382,7 @@ int main(int, char**) {
 
   Parameters_Laba1 parameters_laba1 = {};
   Parameters_Laba2 parameters_laba2 = {};
+  Parameters_Laba3 parameters_laba3 = {};
 
   Input_Float_Settings input_parameters_laba1[] = {
     { "xmin", &parameters_laba1.xmin },
@@ -1092,6 +1410,23 @@ int main(int, char**) {
     { "dt",   &parameters_laba2.dt },
   };
 
+  Input_Float_Settings input_parameters_laba3[] = {
+    { "xmin",   &parameters_laba3.xmin },
+    { "xmax",   &parameters_laba3.xmax },
+    { "ymin",   &parameters_laba3.ymin },
+    { "ymax",   &parameters_laba3.ymax },
+    { "barrier center x", &parameters_laba3.center_x },
+    { "barrier center y", &parameters_laba3.center_y },
+    { "barrier width",  &parameters_laba3.a },
+    { "barrier height", &parameters_laba3.b },
+    { "Re",     &parameters_laba3.Re },
+    { "U0",     &parameters_laba3.U0 },
+    { "dx",     &parameters_laba3.dx },
+    { "dy",     &parameters_laba3.dy },
+    { "dt",     &parameters_laba3.dt },
+  };
+
+
   Method_Spec methods_laba1[] = {
     { non_conservative_lax_method, "Non Conservative Lax Method" },
     { euler_upwind_method,        "Euler Upwind Method"         },
@@ -1102,34 +1437,48 @@ int main(int, char**) {
     { lagrange_method, "Lagrange Method" },
   };
 
+  Method_Spec methods_laba3[] = {
+    { method_2d, "2D Method" },
+  };
+
   The_Thing things[3];
 
   Thread_Data1 thread_data1 = { &parameters_laba1, &things[0].global_t, &things[0].dt };
   Thread_Data2 thread_data2 = { &parameters_laba2, &things[1].global_t, &things[1].dt };
+  Thread_Data3 thread_data3 = { &parameters_laba3, &things[2].global_t, &things[2].dt };
 
 
-  things[0].thread_proc = methods_laba1[0].proc;
-  things[0].thread_parameter = &thread_data1;
-  things[0].name = "Laba 1";
-  things[0].method_name = methods_laba1[0].name;
-  things[0].inputs        = input_parameters_laba1;
-  things[0].inputs_count  = array_size(input_parameters_laba1);
-  things[0].methods       = methods_laba1;
-  things[0].methods_count = array_size(methods_laba1);
+  { // init methods
+
+    things[0].thread_proc = methods_laba1[0].proc;
+    things[0].thread_parameter = &thread_data1;
+    things[0].name = "Laba 1";
+    things[0].method_name = methods_laba1[0].name;
+    things[0].inputs        = input_parameters_laba1;
+    things[0].inputs_count  = array_size(input_parameters_laba1);
+    things[0].methods       = methods_laba1;
+    things[0].methods_count = array_size(methods_laba1);
 
 
-  things[1].thread_proc = methods_laba2[0].proc;
-  things[1].thread_parameter = &thread_data2;
-  things[1].name        = "Laba 2";
-  things[1].method_name = methods_laba2[0].name;
-  things[1].inputs        = input_parameters_laba2;
-  things[1].inputs_count  = array_size(input_parameters_laba2);
-  things[1].methods       = methods_laba2;
-  things[1].methods_count = array_size(methods_laba2);
+    things[1].thread_proc = methods_laba2[0].proc;
+    things[1].thread_parameter = &thread_data2;
+    things[1].name        = "Laba 2";
+    things[1].method_name = methods_laba2[0].name;
+    things[1].inputs        = input_parameters_laba2;
+    things[1].inputs_count  = array_size(input_parameters_laba2);
+    things[1].methods       = methods_laba2;
+    things[1].methods_count = array_size(methods_laba2);
 
-  things[2].name = "Laba 3";
+    things[2].thread_proc = methods_laba3[0].proc;
+    things[2].thread_parameter = &thread_data3;
+    things[2].name        = "Laba 3";
+    things[2].method_name = methods_laba3[0].name;
+    things[2].inputs        = input_parameters_laba3;
+    things[2].inputs_count  = array_size(input_parameters_laba3);
+    things[2].methods       = methods_laba3;
+    things[2].methods_count = array_size(methods_laba3);
 
-  { // init_program();
+    // init parameters
     parameters_laba1.xmin = -3.0f;
     parameters_laba1.xmax = 3.0f;
     parameters_laba1.p0   = 1.0f;
@@ -1152,6 +1501,19 @@ int main(int, char**) {
     parameters_laba2.dt   = 0.0001f;
     parameters_laba2.dx   = 0.01f;
 
+    parameters_laba3.xmin = -3;
+    parameters_laba3.xmax =  3;
+    parameters_laba3.ymin = -3;
+    parameters_laba3.ymax =  3;
+    parameters_laba3.center_x = -1.5;
+    parameters_laba3.center_y = 0;
+    parameters_laba3.a = 0.2;
+    parameters_laba3.b = 0.2;
+    parameters_laba3.Re = 500;
+    parameters_laba3.U0 = 1;
+    parameters_laba3.dx = 0.05;
+    parameters_laba3.dy = 0.05;
+    parameters_laba3.dt = 0.01;
 
     result.data_mutex = create_mutex();
     lagrange.data_mutex = create_mutex();
