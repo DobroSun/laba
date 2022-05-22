@@ -143,8 +143,7 @@ struct Parameters_Laba4 {
   float ymax;
   float Re;
   float Ri;
-  float Pu;
-  float U0;
+  float Pe;
   float dx;
   float dy;
   float dt;
@@ -255,8 +254,9 @@ template<class T>
 struct Solution_2D {
   Mutex data_mutex = {};
 
-  array<Voxel3d> data;
+  array<T> data;
   size_t size_x, size_y;
+
 
   Getter_2D<T> operator[](size_t t) {
     Getter_2D<T> getter = {};
@@ -266,7 +266,6 @@ struct Solution_2D {
     getter.data.dimension_size    = size_x;
     return getter;
   }
-
 };
 
 
@@ -308,15 +307,6 @@ struct Result2d {
   }
 };
 
-struct Result3d {
-  Mutex data_mutex = {};
-
-  array<Voxel3d> data;
-  size_t size_x, size_y;
-
-
-};
-
 Vertex get_data(Result* r, size_t i, size_t j) {
   return r->data[i * r->grid.size + j];
 }
@@ -347,22 +337,10 @@ Voxel2d get_data(Result2d* r, Result2d* v, size_t i, size_t j) {
   return *get_pointer(r, v, i, j);
 }
 
-Voxel3d get_data(Result3d* r, size_t i, size_t j, size_t t) {
-  return r->data[t * (r->size_x * r->size_y) + i * r->size_y + j];
-}
-
-Voxel3d* get_pointer(Result3d* r, array<Voxel3d>* v, size_t i, size_t j) {
-  return &v->data[i * r->size_y + j];
-}
-
-Voxel3d get_data(Result3d* r, array<Voxel3d>* v, size_t i, size_t j) {
-  return *get_pointer(r, v, i, j);
-}
-
 static Result result;
 static Result_Lagrange lagrange;
 static Result2d result2d;
-static Result3d result3d;
+static Solution_2D<Voxel3d> result3d;
 
 
 static int euler_upwind_method(void* param) {
@@ -961,8 +939,6 @@ static int method_2d(void* param) {
 
     for (size_t i = 1; i < NUMBER_OF_POINTS_IN_X-1; i++) {
       for (size_t j = 1; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
-        size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
-
         auto r = result2d;
         Voxel2d v_cur = r[k][i][j];
         Voxel2d v_ip1 = r[k][i+1][j];
@@ -981,7 +957,7 @@ static int method_2d(void* param) {
         if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
-          temp_data.data[idx].eps = eps;
+          temp_data[0][i][j].eps = eps;
         }
       }
     }
@@ -992,8 +968,6 @@ static int method_2d(void* param) {
       // 
       for (size_t i = 1; i < NUMBER_OF_POINTS_IN_X-1; i++) {
         for (size_t j = 1; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
-          size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
-
           Voxel2d v_cur = temp_data[0][i][j];
           Voxel2d v_ip1 = temp_data[0][i+1][j];
           Voxel2d v_im1 = temp_data[0][i-1][j]; 
@@ -1014,8 +988,6 @@ static int method_2d(void* param) {
 
     for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
       for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
-        size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
-
         Voxel2d v_cur = temp_data[0][i][j];
         Voxel2d v_jp1 = temp_data[0][i][j+1];
 
@@ -1146,8 +1118,7 @@ static int another_cool_name_for_a_method(void* param) {
   double ymax = params.ymax;
   double Re = params.Re;
   double Ri = params.Ri;
-  double Pu = params.Pu;
-  double U0 = params.U0;
+  double Pe = params.Pe;
   double dx = params.dx;
   double dy = params.dy;
   double dt = params.dt;
@@ -1158,44 +1129,130 @@ static int another_cool_name_for_a_method(void* param) {
   size_t NUMBER_OF_POINTS_PER_LAYER = NUMBER_OF_POINTS_IN_X * NUMBER_OF_POINTS_IN_Y;
   size_t MAX_ALLOCATED_MEMORY = NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel3d);
 
+  size_t N_x = NUMBER_OF_POINTS_IN_X;
+  size_t N_y = NUMBER_OF_POINTS_IN_Y;
+
+  assert(N_x == N_y); // @Optimization: we expect a grid to be square.
+
   InterlockedExchange64((int64*)  data->dt,        *(int64*) &dt);
   InterlockedExchange64((int64*)  data->global_t,  *(int64*) &t); 
-  InterlockedExchange64((int64*) &result2d.size_x, *(int64*) &NUMBER_OF_POINTS_IN_X);
-  InterlockedExchange64((int64*) &result2d.size_y, *(int64*) &NUMBER_OF_POINTS_IN_Y);
+  InterlockedExchange64((int64*) &result3d.size_x, *(int64*) &NUMBER_OF_POINTS_IN_X);
+  InterlockedExchange64((int64*) &result3d.size_y, *(int64*) &NUMBER_OF_POINTS_IN_Y);
 
   Memory_Arena arena;
   begin_memory_arena(&arena, MAX_ALLOCATED_MEMORY);
   defer { end_memory_arena(&arena); }; // @MemoryLeak: 
 
 
-  array<Voxel3d> temp_data;
-  temp_data.allocator = arena.allocator;
+  Solution_2D<Voxel3d> temp_data;
+  temp_data.size_x = result3d.size_x;
+  temp_data.size_y = result3d.size_y;
+  temp_data.data.allocator = arena.allocator;
 
-  array_resize(&temp_data, NUMBER_OF_POINTS_PER_LAYER);
+  array_resize(&temp_data.data, NUMBER_OF_POINTS_PER_LAYER);
 
-  { // initial conditions (t = 0).
-    memset(temp_data.data, 0, sizeof(Voxel3d) * temp_data.size);
-    {
-      Scoped_Lock lock(&result3d.data_mutex);
-      array_add(&result3d.data, &temp_data);
+  // initial conditions (t = 0).
+  {
+    memset(temp_data.data.data, 0, sizeof(Voxel3d) * temp_data.data.size);
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+      temp_data[0][i][0].tet = ImPlot::RandomRange(0.0, 1.0);
     }
 
-    t += dt;
-    InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
+    {
+      Scoped_Lock lock(&result3d.data_mutex);
+      array_add(&result3d.data, &temp_data.data);
+    }
   }
+
+  t += dt;
+  InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
 
   size_t k = 0;
   while (1) {
 
-    memcpy(temp_data.data, result3d.data.data + k*NUMBER_OF_POINTS_PER_LAYER, NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel3d));
+    memcpy(temp_data.data.data, result3d.data.data + k*NUMBER_OF_POINTS_PER_LAYER, NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel3d));
 
-    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
-      /*tet[i][0] = */ImPlot::RandomRange(0.0, 1.0);
+    auto r = result3d[k];
+
+    // 
+    // адвекция диффузия схема против потока eps & tet.
+    // 
+    for (size_t i = 1; i < N_x-1; i++) {
+      for (size_t j = 1; j < N_y-1; j++) {
+
+        double q = (dx*dx) / (dy*dy);
+        double a = r[i][j].u > 0 ? 0 : 1;
+        double b = r[i][j].v > 0 ? 0 : 1;
+
+        double eps = r[i][j].eps - dt/dx * r[i][j].u * (1 - a) * (r[i][j].eps - r[i-1][j].eps) - dt/dx * a * r[i][j].u * (r[i+1][j].eps - r[i][j].eps) - dt/dy * r[i][j].v * (1 - b) * (r[i][j].eps - r[i][j-1].eps) - dt/dy * b * r[i][j].v * (r[i][j+1].eps - r[i][j].eps) + dt/Re * ((r[i+1][j].eps - 2.0 * r[i][j].eps + r[i-1][j].eps) / (dx*dx) + (r[i][j+1].eps - 2.0 * r[i][j].eps + r[i][j-1].eps) / (dy*dy)) - Ri*dt / (2.0 * dx) * (r[i+1][j].tet - r[i-1][j].tet);
+
+        double tet =  r[i][j].tet - dt/dx * r[i][j].u * (1-a) * (r[i][j].tet - r[i-1][j].tet) - dt/dx * a * r[i][j].u * (r[i+1][j].tet - r[i][j].tet) - dt/dy * r[i][j].v * (1-b) * (r[i][j].tet - r[i][j-1].tet) - dt/dy * b * r[i][j].v * (r[i][j+1].tet - r[i][j].tet) + dt/Pe * ((r[i+1][j].tet - 2.0 * r[i][j].tet + r[i-1][j].tet) / (dx*dx) + (r[i][j+1].tet - 2.0 * r[i][j].tet + r[i][j-1].tet) / (dy*dy));
+
+
+        // One iteration with Jacobi.
+        auto temp = temp_data[0];
+        double psi = (temp[i+1][j].psi + temp[i-1][j].psi + q*(temp[i][j+1].psi + temp[i][j-1].psi)) / (2.0 + 2.0*q) - dx*dx / (2.0 + 2.0*q) * eps;
+
+        temp_data[0][i][j].eps = eps;
+        temp_data[0][i][j].psi = psi;
+        temp_data[0][i][j].tet = tet;
+      }
+    }
+
+    // края
+    for (size_t j = 1; j < N_y-1; j++) {
+      double a = r[0][j].u > 0 ? 0 : 1;
+      double b = r[0][j].v > 0 ? 0 : 1;
+
+      double eps = r[0][j].eps - dt/dx * r[0][j].u * (1-a) * (r[0][j].eps - r[N_x-2][j].eps) - dt/dx * a * r[0][j].u * (r[0+1][j].eps - r[0][j].eps) - dt/dy * r[0][j].v * (1-b) * (r[0][j].eps - r[0][j-1].eps) - dt/dy * b * r[0][j].v * (r[0][j+1].eps - r[0][j].eps) + dt/Re * ((r[0+1][j].eps - 2.0 * r[0][j].eps + r[N_x-2][j].eps) / (dx*dx) + (r[0][j+1].eps - 2.0 * r[0][j].eps + r[0][j-1].eps) / (dy*dy)) - Ri*dt / (2.0*dx) * (r[0+1][j].tet - r[N_x-2][j].tet);
+
+      double tet = r[0][j].tet - dt/dx * r[0][j].u * (1-a) * (r[0][j].tet - r[N_x-2][j].tet) - dt/dx * a * r[0][j].u * (r[0+1][j].tet - r[0][j].tet) - dt/dy * r[0][j].v * (1-b) * (r[0][j].tet - r[0][j-1].tet) - dt/dy * b * r[0][j].v * (r[0][j+1].tet - r[0][j].tet) + dt/Pe * ((r[0+1][j].tet - 2.0 * r[0][j].tet + r[N_x-2][j].tet) / (dx*dx) + (r[0][j+1].tet - 2.0 * r[0][j].tet + r[0][j-1].tet) / (dy*dy));
+
+      auto temp = temp_data[0];
+      double q   = (dx*dx) / (dy*dy);
+      double psi = (temp[1][j].psi + temp[N_y-2][j].psi + q * (temp[0][j+1].psi + temp[0][j-1].psi)) / (2.0 + 2.0*q) - dx*dx / (2.0 + 2.0*q) * temp[0][j].eps;
+
+      auto* left  = &temp_data[0][0]    [j];
+      auto* right = &temp_data[0][N_x-1][j];
+
+      left->eps = eps;
+      left->psi = psi;
+      left->tet = tet;
+
+      right->eps = eps;
+      right->psi = psi;
+      right->tet = tet;
+    }
+
+    r = temp_data[0];
+
+    for (size_t i = 1; i < N_x-1; i++) {
+      for (size_t j = 1; j < N_y-1; j++) {
+        r[i][j].u = (r[i][j+1].psi - r[i][j-1].psi) / (2.0*dy);
+        r[i][j].v = -1 * (r[i+1][j].psi - r[i-1][j].psi) / (2.0*dx);
+      }
+    }
+
+    for (size_t j = 0; j < N_y; j++) {
+      size_t i = j; // we can do this because N_x == N_y, meaning a grid is square.
+
+      r[0]    [j].v = -1 * (r[1][j].psi - r[N_x-2][j].psi) / (2.0 * dx);
+      r[N_x-1][j].v = r[0][j].v;
+
+      r[i][N_y-1].tet = r[i][N_y-2].tet * 0.7;
+      r[i][N_y-1].u = 0;
+      r[i]    [0].u = 0;
+      r[i][N_y-1].v = 0;
+      r[i]    [0].v = 0;
+      r[i][N_y-1].psi = 0;
+      r[i]    [0].psi = 0;
+      r[i][N_y-1].eps = 2.0 * r[i][N_y-2].psi / (dy/dy);
+      r[i]    [0].eps = 2.0 * r[i][1].psi     / (dy*dy);
     }
 
     {
       Scoped_Lock lock(&result3d.data_mutex);
-      array_add(&result3d.data, &temp_data);
+      array_add(&result3d.data, &temp_data.data);
     }
 
     k += 1;
@@ -1466,9 +1523,7 @@ void render_laba3(Memory_Arena* arena, The_Thing* thing) {
   }
 
 
-  ImPlotColormap  map = ImPlotColormap_Plasma;
-  ImPlotAxisFlags axes_flags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks;
-
+  ImPlotColormap map = ImPlotColormap_Plasma;
   ImPlot::PushColormap(map);
 
   const ImVec2 colormap_scale_size = ImVec2(60,   600);
@@ -1526,7 +1581,71 @@ void render_laba3(Memory_Arena* arena, The_Thing* thing) {
   }
 
   ImPlot::PopColormap();
+}
 
+void render_laba4(Memory_Arena* arena, The_Thing* thing) {
+  if (thing->clear_the_thing) {
+    thing->clear_the_thing = false;
+
+    result2d.data.size = 0;
+    result2d.size_x = 0;
+    result2d.size_y = 0;
+
+    thing->global_t = 0;
+    thing->dt       = 0;
+  }
+
+  const ImVec2 colormap_scale_size = ImVec2(60,  400);
+  const ImVec2 colormap_size       = ImVec2(400, 400);
+
+  ImPlotColormap map = ImPlotColormap_Plasma;
+  ImPlot::PushColormap(map);
+
+  ImPlot::ColormapScale("##HeatScale", -10.0, 10.0, colormap_scale_size);
+
+  ImGui::SameLine();
+
+  array<Voxel3d> heatmap_to_draw_this_frame;
+  array<double>  velocity;
+
+  size_t size_x;
+  size_t size_y;
+
+  heatmap_to_draw_this_frame.allocator = arena->allocator;
+  velocity.allocator = arena->allocator;
+
+  {
+    Scoped_Lock mutex(&result3d.data_mutex);
+
+    size_x = result3d.size_x;
+    size_y = result3d.size_y;
+
+    size_t n = thing->time / thing->dt;
+    size_t start =  n    * size_x * size_y;
+    size_t end   = (n+1) * size_x * size_y;
+
+    if (result3d.data.size && start <= result3d.data.size && end <= result3d.data.size) { // @Incomplete: wtf is that.
+      array_copy_range(&heatmap_to_draw_this_frame, &result3d.data, start, end);
+    }
+  }
+
+  array_resize(&velocity, heatmap_to_draw_this_frame.size);
+
+  for (size_t i = 0; i < velocity.size; i++) {
+    double u = heatmap_to_draw_this_frame[i].u;
+    double v = heatmap_to_draw_this_frame[i].v;
+
+    velocity[i] = sqrt(u*u + v*v);
+    velocity[i] = clamp(velocity[i], 0.0f, 1.0f);
+  }
+
+  if (ImPlot::BeginPlot("##Heatmap2", colormap_size)) {
+    ImPlot::SetupAxes(NULL, NULL, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+    ImPlot::PlotHeatmap("heat1", velocity.data, size_x, size_y, 0.0f, 1.0f, NULL);
+    ImPlot::EndPlot();
+  }
+
+  ImPlot::PopColormap();
 }
 
 int main(int, char**) {
@@ -1618,8 +1737,7 @@ int main(int, char**) {
     { "ymax",   &parameters_laba4.xmax },
     { "Re",     &parameters_laba4.Re },
     { "Ri",     &parameters_laba4.Ri },
-    { "Pu",     &parameters_laba4.Pu },
-    { "U0",     &parameters_laba4.U0 },
+    { "Pe",     &parameters_laba4.Pe },
     { "dx",     &parameters_laba4.dx }, // @Hack: those are NOT inverted, don't know why
     { "dy",     &parameters_laba4.dy },
     { "dt",     &parameters_laba4.dt },
@@ -1728,17 +1846,16 @@ int main(int, char**) {
     parameters_laba3.dy = 0.1;
     parameters_laba3.dt = 0.05;
 
-    parameters_laba4.xmin = -6;
-    parameters_laba4.xmax =  6;
-    parameters_laba4.ymin = -10;
-    parameters_laba4.ymax = 10;
+    parameters_laba4.xmin = -3;
+    parameters_laba4.xmax =  3;
+    parameters_laba4.ymin = -3;
+    parameters_laba4.ymax =  3;
     parameters_laba4.Re = 500;
-    parameters_laba4.Ri = 1;
-    parameters_laba4.Pu = 0;
-    parameters_laba4.U0 = 1;
-    parameters_laba4.dx = 0.05;
-    parameters_laba4.dy = 0.1;
-    parameters_laba4.dt = 0.05;
+    parameters_laba4.Ri = 10;
+    parameters_laba4.Pe = parameters_laba4.Re;
+    parameters_laba4.dx = 0.02;
+    parameters_laba4.dy = 0.02;
+    parameters_laba4.dt = 0.006;
 
     result.data_mutex = create_mutex();
     lagrange.data_mutex = create_mutex();
@@ -1887,6 +2004,7 @@ int main(int, char**) {
           case 0: render_laba1(&temporary_storage, thing); break;
           case 1: render_laba2(&temporary_storage, thing); break;
           case 2: render_laba3(&temporary_storage, thing); break;
+          case 3: render_laba4(&temporary_storage, thing); break;
           }
         }
       }
