@@ -136,6 +136,21 @@ struct Parameters_Laba3 {
   float dt;
 };
 
+struct Parameters_Laba4 {
+  float xmin;
+  float xmax;
+  float ymin;
+  float ymax;
+  float Re;
+  float Ri;
+  float Pu;
+  float U0;
+  float dx;
+  float dy;
+  float dt;
+};
+
+
 struct Thread_Data1 {
   Parameters_Laba1* parameters;
   double* global_t;
@@ -154,7 +169,48 @@ struct Thread_Data3 {
   double* dt;
 };
 
+struct Thread_Data4 {
+  Parameters_Laba4* parameters;
+  double* global_t;
+  double* dt;
+};
 
+
+
+template<class T>
+struct Getter_Data {
+  T* d1;
+  size_t accumulated_index;
+  size_t multiply_size;
+  size_t dimension_size;
+};
+
+template<class T>
+struct Getter_1D {
+  Getter_Data<T> data;
+
+  T& operator[](size_t t) {
+    assert(t < data.dimension_size);
+    data.accumulated_index += t;
+    return data.d1[data.accumulated_index];
+  }
+};
+
+template<class T>
+struct Getter_2D {
+  Getter_Data<T> data;
+
+  Getter_1D<T> operator[](size_t t) {
+    assert(t < data.dimension_size);
+
+    Getter_1D<T> getter = {};
+    getter.data.d1                = data.d1;
+    getter.data.accumulated_index = data.accumulated_index + t * data.multiply_size;
+    getter.data.multiply_size     = 1;
+    getter.data.dimension_size    = data.multiply_size;
+    return getter;
+  }
+};
 
 struct Vertex {
   double r;
@@ -186,6 +242,35 @@ struct Voxel2d {
   double v;
 };
 
+struct Voxel3d {
+  double eps;
+  double psi;
+  double tet;
+  double u;
+  double v;
+};
+
+
+template<class T>
+struct Solution_2D {
+  Mutex data_mutex = {};
+
+  array<Voxel3d> data;
+  size_t size_x, size_y;
+
+  Getter_2D<T> operator[](size_t t) {
+    Getter_2D<T> getter = {};
+    getter.data.d1                = data.data;
+    getter.data.accumulated_index = t * size_y * size_x;
+    getter.data.multiply_size     = size_y;
+    getter.data.dimension_size    = size_x;
+    return getter;
+  }
+
+};
+
+
+
 struct Result {
   Mutex data_mutex = {};
 
@@ -205,11 +290,6 @@ struct Result_Lagrange {
   array<Voxel>            internal_data;
 };
 
-struct Vec2 {
-  double x;
-  double y;
-};
-
 struct Result2d {
   Mutex data_mutex = {};
 
@@ -217,6 +297,24 @@ struct Result2d {
   //array<double>  time; // @CleanUp: actually we never use time, because our dt is always const. So we can just remove time from Result, Result_Lagrange, Result2d.
 
   size_t size_x, size_y;
+
+  Getter_2D<Voxel2d> operator[](size_t t) {
+    Getter_2D<Voxel2d> getter = {};
+    getter.data.d1                = data.data;
+    getter.data.accumulated_index = t * size_y * size_x;
+    getter.data.multiply_size     = size_y;
+    getter.data.dimension_size    = size_x;
+    return getter;
+  }
+};
+
+struct Result3d {
+  Mutex data_mutex = {};
+
+  array<Voxel3d> data;
+  size_t size_x, size_y;
+
+
 };
 
 Vertex get_data(Result* r, size_t i, size_t j) {
@@ -241,17 +339,30 @@ Voxel2d get_data(Result2d* r, size_t i, size_t j, size_t t) {
   return r->data[t * (r->size_x * r->size_y) + i * r->size_y + j];
 }
 
-Voxel2d* get_pointer(Result2d* r, array<Voxel2d>* v, size_t i, size_t j) {
+Voxel2d* get_pointer(Result2d* r, Result2d* v, size_t i, size_t j) {
+  return &v->operator[](0)[i][j];
+}
+
+Voxel2d get_data(Result2d* r, Result2d* v, size_t i, size_t j) {
+  return *get_pointer(r, v, i, j);
+}
+
+Voxel3d get_data(Result3d* r, size_t i, size_t j, size_t t) {
+  return r->data[t * (r->size_x * r->size_y) + i * r->size_y + j];
+}
+
+Voxel3d* get_pointer(Result3d* r, array<Voxel3d>* v, size_t i, size_t j) {
   return &v->data[i * r->size_y + j];
 }
 
-Voxel2d get_data(Result2d* r, array<Voxel2d>* v, size_t i, size_t j) {
+Voxel3d get_data(Result3d* r, array<Voxel3d>* v, size_t i, size_t j) {
   return *get_pointer(r, v, i, j);
 }
 
 static Result result;
 static Result_Lagrange lagrange;
 static Result2d result2d;
+static Result3d result3d;
 
 
 static int euler_upwind_method(void* param) {
@@ -802,8 +913,7 @@ static int method_2d(void* param) {
   size_t NUMBER_OF_POINTS_IN_Y      = (ymax - ymin) / dy;
   size_t NUMBER_OF_POINTS_PER_LAYER = NUMBER_OF_POINTS_IN_X * NUMBER_OF_POINTS_IN_Y;
   size_t MAX_ALLOCATED_MEMORY = NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel2d);
-
-  printf("%zu x %zu\n", NUMBER_OF_POINTS_IN_X, NUMBER_OF_POINTS_IN_Y);
+  size_t Nx = NUMBER_OF_POINTS_IN_X, Ny = NUMBER_OF_POINTS_IN_Y;
 
   size_t center_x_index = (center_x - xmin) / (xmax - xmin) * NUMBER_OF_POINTS_IN_X;
   size_t center_y_index = (center_y - ymin) / (ymax - ymin) * NUMBER_OF_POINTS_IN_Y;
@@ -825,23 +935,19 @@ static int method_2d(void* param) {
   begin_memory_arena(&arena, MAX_ALLOCATED_MEMORY);
   defer { end_memory_arena(&arena); }; // @MemoryLeak: @Incomplete: what happens to this memory if we kill a thread? 
 
-  reset_memory_arena(&arena);
 
-  array<Voxel2d> temp_data;
-  temp_data.allocator = arena.allocator;
+  Result2d temp_data;
+  temp_data.data.allocator = arena.allocator;
+  temp_data.size_x = result2d.size_x;
+  temp_data.size_y = result2d.size_y;
 
-  array_resize(&temp_data, NUMBER_OF_POINTS_PER_LAYER);
+  array_resize(&temp_data.data, NUMBER_OF_POINTS_PER_LAYER);
 
   { // initial conditions (t = 0).
-    for (size_t i = 0; i < NUMBER_OF_POINTS_PER_LAYER; i++) {
-      temp_data[i].eps = 0;
-      temp_data[i].psi = 0;
-      temp_data[i].u   = 0;
-      temp_data[i].v   = 0;
-    }
+    memset(temp_data.data.data, 0, sizeof(Voxel2d) * temp_data.data.size);
     {
       Scoped_Lock lock(&result2d.data_mutex);
-      array_add(&result2d.data, &temp_data);
+      array_add(&result2d.data, &temp_data.data);
     }
 
     t += dt;
@@ -851,17 +957,18 @@ static int method_2d(void* param) {
   size_t k = 0;
   while (1) {
 
-    memcpy(temp_data.data, result2d.data.data + k*NUMBER_OF_POINTS_PER_LAYER, NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel2d));
+    memcpy(temp_data.data.data, result2d.data.data + k*NUMBER_OF_POINTS_PER_LAYER, NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel2d));
 
     for (size_t i = 1; i < NUMBER_OF_POINTS_IN_X-1; i++) {
       for (size_t j = 1; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
         size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
 
-        Voxel2d v_cur = get_data(&result2d, i,   j, k);
-        Voxel2d v_ip1 = get_data(&result2d, i+1, j, k);
-        Voxel2d v_im1 = get_data(&result2d, i-1, j, k);
-        Voxel2d v_jp1 = get_data(&result2d, i, j+1, k);
-        Voxel2d v_jm1 = get_data(&result2d, i, j-1, k);
+        auto r = result2d;
+        Voxel2d v_cur = r[k][i][j];
+        Voxel2d v_ip1 = r[k][i+1][j];
+        Voxel2d v_im1 = r[k][i-1][j];
+        Voxel2d v_jp1 = r[k][i][j+1];
+        Voxel2d v_jm1 = r[k][i][j-1];
 
         double u = v_cur.u;
         double v = v_cur.v;
@@ -874,12 +981,12 @@ static int method_2d(void* param) {
         if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
-          temp_data[idx].eps = eps;
+          temp_data.data[idx].eps = eps;
         }
       }
     }
 
-    for (size_t k = 0; k < 1; k++) { // @Incomplete: do something about this.
+    for (size_t k = 0; k < 2; k++) { // @Incomplete: do something about this.
       // 
       // One iteration by Jacobi.
       // 
@@ -887,11 +994,11 @@ static int method_2d(void* param) {
         for (size_t j = 1; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
           size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
 
-          Voxel2d v_cur = get_data(&result2d, &temp_data, i,   j);
-          Voxel2d v_ip1 = get_data(&result2d, &temp_data, i+1, j);
-          Voxel2d v_im1 = get_data(&result2d, &temp_data, i-1, j);
-          Voxel2d v_jp1 = get_data(&result2d, &temp_data, i, j+1);
-          Voxel2d v_jm1 = get_data(&result2d, &temp_data, i, j-1);
+          Voxel2d v_cur = temp_data[0][i][j];
+          Voxel2d v_ip1 = temp_data[0][i+1][j];
+          Voxel2d v_im1 = temp_data[0][i-1][j]; 
+          Voxel2d v_jp1 = temp_data[0][i][j+1];
+          Voxel2d v_jm1 = temp_data[0][i][j-1];
 
           double q   = (dx*dx) / (dy*dy);
           double psi = (v_ip1.psi + v_im1.psi + q*(v_jp1.psi + v_jm1.psi)) / (2.0 + 2.0*q) - dx*dx / (2.0 + 2.0*q) * v_cur.eps;
@@ -899,7 +1006,7 @@ static int method_2d(void* param) {
           if (j >= left && j <= right && i >= top && i <= bottom) {
             continue;
           } else {
-            temp_data[idx].psi = psi;
+            temp_data[0][i][j].psi = psi;
           }
         }
       }
@@ -909,15 +1016,15 @@ static int method_2d(void* param) {
       for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y-1; j++) {
         size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
 
-        Voxel2d v_cur = get_data(&result2d, &temp_data, i,   j);
-        Voxel2d v_jp1 = get_data(&result2d, &temp_data, i, j+1);
+        Voxel2d v_cur = temp_data[0][i][j];
+        Voxel2d v_jp1 = temp_data[0][i][j+1];
 
         double u = (v_jp1.psi - v_cur.psi) / dy;
 
         if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
-          temp_data[idx].u = u;
+          temp_data[0][i][j].u = u;
         }
       }
     }
@@ -926,114 +1033,98 @@ static int method_2d(void* param) {
       for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y; j++) {
         size_t idx = i * NUMBER_OF_POINTS_IN_Y + j;
 
-        Voxel2d v_cur = get_data(&result2d, &temp_data, i,   j);
-        Voxel2d v_ip1 = get_data(&result2d, &temp_data, i+1, j);
+        Voxel2d v_cur = temp_data[0][i][j];
+        Voxel2d v_ip1 = temp_data[0][i+1][j];
 
         double v = -(v_ip1.psi - v_cur.psi) / dx;
 
         if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
-          temp_data[idx].v = v;
+          temp_data[0][i][j].v = v;
         }
       }
     }
 
     for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X-1; i++) {
-      size_t idx;
-      size_t id1;
-
-      idx = i * NUMBER_OF_POINTS_IN_Y + 0; 
-      id1 = i * NUMBER_OF_POINTS_IN_Y + 1;
-
-      temp_data[idx].eps = temp_data[id1].eps;
-      temp_data[idx].psi = temp_data[id1].psi;
-
-      idx = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-1); 
-      id1 = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-2);
-      temp_data[idx].eps = temp_data[id1].eps;
-      temp_data[idx].psi = temp_data[id1].psi;
+      auto r = temp_data;
+      r[0][i][0].eps = r[0][i][1].eps;
+      r[0][i][0].psi = r[0][i][1].psi;
+      r[0][i][Ny-1].eps = r[0][i][Ny-2].eps;
+      r[0][i][Ny-1].psi = r[0][i][Ny-2].psi;
     }
 
     for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y; j++) {
-      size_t idx;
-      size_t id1;
+      auto r = temp_data;
+      r[0][0][j].eps = 2.0 * (r[0][1][j].psi - r[0][0][j].psi + U0*dy) / (dy*dy);
+      r[0][0][j].psi = r[0][1][j].psi + U0*dy;
+      r[0][0][j].u   = U0;
+      r[0][0][j].v   = 0;
 
-      auto r = temp_data.data; 
-      idx = 0 * NUMBER_OF_POINTS_IN_Y + j; 
-      id1 = 1 * NUMBER_OF_POINTS_IN_Y + j;
-      temp_data[idx].eps = 2.0 * (r[id1].psi - r[idx].psi + U0*dy) / (dy*dy);
-      temp_data[idx].psi = r[id1].psi + U0*dy;
-      temp_data[idx].u   = U0;
-      temp_data[idx].v   = 0;
-
-      idx = (NUMBER_OF_POINTS_IN_X-1) * NUMBER_OF_POINTS_IN_Y + j; 
-      id1 = (NUMBER_OF_POINTS_IN_X-2) * NUMBER_OF_POINTS_IN_Y + j;
-      temp_data[idx].eps = 2 * (r[id1].psi - r[idx].psi - U0*dy) / (dy*dy);
-      temp_data[idx].psi = r[id1].psi - U0*dy;
-      temp_data[idx].u   = U0;
-      temp_data[idx].v   = 0;
+      r[0][Nx-1][j].eps = 2 * (r[0][Nx-2][j].psi - r[0][Nx-1][j].psi - U0*dy) / (dy*dy);
+      r[0][Nx-1][j].psi = r[0][Nx-2][j].psi - U0*dy;
+      r[0][Nx-1][j].u   = U0;
+      r[0][Nx-1][j].v   = 0;
     }
 
     for (size_t j = left; j <= right; j++) {
       if (j >= NUMBER_OF_POINTS_IN_Y) { continue; }
 
-      Voxel2d* jt = get_pointer(&result2d, &temp_data, top, j);
-      Voxel2d* jb = get_pointer(&result2d, &temp_data, bottom, j);
+      Voxel2d* jt = &temp_data[0][top][j];
+      Voxel2d* jb = &temp_data[0][bottom][j];
 
       if (top < NUMBER_OF_POINTS_IN_X) {
         jt->u   = 0;
         jt->v   = 0;
         jt->psi = 0;
-        jt->eps = 2.0 * get_data(&result2d, &temp_data, top-1, j).psi / (dy*dy);
+        jt->eps = 2.0 * temp_data[0][top-1][j].psi / (dy*dy);
       }
 
       if (bottom < NUMBER_OF_POINTS_IN_X) {
         jb->u   = 0;
         jb->v   = 0;
         jb->psi = 0;
-        jb->eps = 2.0 * get_data(&result2d, &temp_data, bottom+1, j).psi / (dy*dy);
+        jb->eps = 2.0 * temp_data[0][bottom+1][j].psi / (dy*dy);
       }
     }
 
     for (size_t i = top; i <= bottom; i++) {
       if (i >= NUMBER_OF_POINTS_IN_X) { continue; }
 
-      Voxel2d* il = get_pointer(&result2d, &temp_data, i, left);
-      Voxel2d* ir = get_pointer(&result2d, &temp_data, i, right);
+      Voxel2d* il = &temp_data[0][i][left];
+      Voxel2d* ir = &temp_data[0][i][right];
 
       if (left < NUMBER_OF_POINTS_IN_Y) {
         il->u   = 0;
         il->v   = 0;
         il->psi = 0;
-        il->eps = 2.0 * get_data(&result2d, &temp_data, i, left-1).psi / (dx*dx);;
+        il->eps = 2.0 * temp_data[0][i][left-1].psi / (dx*dx);;
       }
 
       if (right < NUMBER_OF_POINTS_IN_Y) {
         ir->u   = 0;
         ir->v   = 0;
         ir->psi = 0;
-        ir->eps = 2.0 * get_data(&result2d, &temp_data, i, right+1).psi / (dx*dx);
+        ir->eps = 2.0 * temp_data[0][i][right+1].psi / (dx*dx);
       }
     }
 
     {
-      size_t Nx = NUMBER_OF_POINTS_IN_X, Ny = NUMBER_OF_POINTS_IN_Y;
-      if (bottom < Nx && left < Ny)  get_pointer(&result2d, &temp_data, bottom, left)->eps  = 2.0 * get_pointer(&result2d, &temp_data, bottom+1, left)->psi / (dy*dy)
-                                                                                           + 2.0 * get_pointer(&result2d, &temp_data, bottom, left-1)->psi / (dx*dx);
-      if (bottom < Nx && right < Ny) get_pointer(&result2d, &temp_data, bottom, right)->eps = 2.0 * get_pointer(&result2d, &temp_data, bottom+1, right)->psi / (dy*dy)
-                                                                                            + 2.0 * get_pointer(&result2d, &temp_data, bottom, right+1)->psi / (dx*dx);
+      if (bottom < Nx && left < Ny)  temp_data[0][bottom][left].eps = 2.0 * temp_data[0][bottom+1][left].psi / (dy*dy)
+                                                                    + 2.0 * temp_data[0][bottom][left-1].psi / (dx*dx);
+      if (bottom < Nx && right < Ny) temp_data[0][bottom][right].eps = 2.0 * temp_data[0][bottom+1][right].psi / (dy*dy)
+                                                                     + 2.0 * temp_data[0][bottom][right+1].psi / (dx*dx);
 
-      if (top < Nx && left < Ny)  get_pointer(&result2d, &temp_data, top, left)->eps  = 2.0 * get_pointer(&result2d, &temp_data, top-1, left)->psi / (dy*dy)
-                                                                                      + 2.0 * get_pointer(&result2d, &temp_data, top, left-1)->psi / (dx*dx);
-      if (top < Nx && right < Ny) get_pointer(&result2d, &temp_data, top, right)->eps = 2.0 * get_pointer(&result2d, &temp_data, top-1, right)->psi / (dy*dy)
-                                                                                      + 2.0 * get_pointer(&result2d, &temp_data, top, right+1)->psi / (dx*dx);
+      if (top < Nx && left < Ny)  temp_data[0][top][left].eps = 2.0 * temp_data[0][top-1][left].psi / (dy*dy)
+                                                              + 2.0 * temp_data[0][top][left-1].psi / (dx*dx);
+      if (top < Nx && right < Ny) temp_data[0][top][right].eps = 2.0 * temp_data[0][top-1][right].psi / (dy*dy)
+                                                               + 2.0 * temp_data[0][top][right+1].psi / (dx*dx);
 
     }
 
     {
       Scoped_Lock lock(&result2d.data_mutex);
-      array_add(&result2d.data, &temp_data);
+      array_add(&result2d.data, &temp_data.data);
     }
 
     k += 1;
@@ -1042,6 +1133,76 @@ static int method_2d(void* param) {
     InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
   }
 
+  return 0;
+}
+
+static int another_cool_name_for_a_method(void* param) {
+  Thread_Data4* data = (Thread_Data4*) param;
+  Parameters_Laba4 params = *data->parameters; // copy
+
+  double xmin = params.xmin;
+  double xmax = params.xmax;
+  double ymin = params.ymin;
+  double ymax = params.ymax;
+  double Re = params.Re;
+  double Ri = params.Ri;
+  double Pu = params.Pu;
+  double U0 = params.U0;
+  double dx = params.dx;
+  double dy = params.dy;
+  double dt = params.dt;
+  double t = 0.0;
+
+  size_t NUMBER_OF_POINTS_IN_X      = (xmax - xmin) / dx;
+  size_t NUMBER_OF_POINTS_IN_Y      = (ymax - ymin) / dy;
+  size_t NUMBER_OF_POINTS_PER_LAYER = NUMBER_OF_POINTS_IN_X * NUMBER_OF_POINTS_IN_Y;
+  size_t MAX_ALLOCATED_MEMORY = NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel3d);
+
+  InterlockedExchange64((int64*)  data->dt,        *(int64*) &dt);
+  InterlockedExchange64((int64*)  data->global_t,  *(int64*) &t); 
+  InterlockedExchange64((int64*) &result2d.size_x, *(int64*) &NUMBER_OF_POINTS_IN_X);
+  InterlockedExchange64((int64*) &result2d.size_y, *(int64*) &NUMBER_OF_POINTS_IN_Y);
+
+  Memory_Arena arena;
+  begin_memory_arena(&arena, MAX_ALLOCATED_MEMORY);
+  defer { end_memory_arena(&arena); }; // @MemoryLeak: 
+
+
+  array<Voxel3d> temp_data;
+  temp_data.allocator = arena.allocator;
+
+  array_resize(&temp_data, NUMBER_OF_POINTS_PER_LAYER);
+
+  { // initial conditions (t = 0).
+    memset(temp_data.data, 0, sizeof(Voxel3d) * temp_data.size);
+    {
+      Scoped_Lock lock(&result3d.data_mutex);
+      array_add(&result3d.data, &temp_data);
+    }
+
+    t += dt;
+    InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
+  }
+
+  size_t k = 0;
+  while (1) {
+
+    memcpy(temp_data.data, result3d.data.data + k*NUMBER_OF_POINTS_PER_LAYER, NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel3d));
+
+    for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X; i++) {
+      /*tet[i][0] = */ImPlot::RandomRange(0.0, 1.0);
+    }
+
+    {
+      Scoped_Lock lock(&result3d.data_mutex);
+      array_add(&result3d.data, &temp_data);
+    }
+
+    k += 1;
+    t += dt;
+
+    InterlockedExchange64((int64*) data->global_t, *(int64*) &t);
+  }
   return 0;
 }
 
@@ -1136,7 +1297,7 @@ void render_laba1(Memory_Arena* arena, The_Thing* thing) {
     r_array[i] = data_to_be_drawn_this_frame[i].r;
   }
 
-         const bool auto_fit = thing->auto_fit;
+  const bool auto_fit = thing->auto_fit;
   static const ImVec2 plot_rect_size = ImVec2(300, 300);
   static const auto   plot_flags = thing->auto_fit ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
   if (ImPlot::BeginPlot("Pressure", plot_rect_size)) {
@@ -1222,7 +1383,7 @@ void render_laba2(Memory_Arena* arena, The_Thing* thing) {
     r_array[i] = data_to_be_drawn_this_frame[i].r;
   }
 
-         const bool auto_fit = thing->auto_fit;
+  const bool auto_fit = thing->auto_fit;
   static const ImVec2 plot_rect_size = ImVec2(300, 300);
   static const auto   plot_flags = auto_fit ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
   if (ImPlot::BeginPlot("Euler coordinate R(r, t)", plot_rect_size)) {
@@ -1341,18 +1502,26 @@ void render_laba3(Memory_Arena* arena, The_Thing* thing) {
     }
   }
 
+
   array_resize(&velocity, heatmap_to_draw_this_frame.size);
+
+  assert(heatmap_to_draw_this_frame.size == size_x * size_y);
+  assert(velocity.size == heatmap_to_draw_this_frame.size);
+  assert(velocity.size == size_x * size_y);
 
   for (size_t i = 0; i < velocity.size; i++) {
     double u = heatmap_to_draw_this_frame[i].u;
     double v = heatmap_to_draw_this_frame[i].v;
 
     velocity[i] = sqrt(u*u + v*v);
+    velocity[i] = clamp(velocity[i], 0.0f, 1.0f);
   }
+
+  array<double> values = array_copy(&velocity);
 
   if (ImPlot::BeginPlot("##Heatmap2", colormap_size)) {
     ImPlot::SetupAxes(NULL, NULL, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
-    ImPlot::PlotHeatmap("heat1", velocity.data, size_x, size_y, 0.0f, 1.0f, NULL);
+    ImPlot::PlotHeatmap("heat1", values.data, size_x, size_y, 0.0f, 1.0f, NULL);
     ImPlot::EndPlot();
   }
 
@@ -1398,6 +1567,7 @@ int main(int, char**) {
   Parameters_Laba1 parameters_laba1 = {};
   Parameters_Laba2 parameters_laba2 = {};
   Parameters_Laba3 parameters_laba3 = {};
+  Parameters_Laba4 parameters_laba4 = {};
 
   Input_Float_Settings input_parameters_laba1[] = {
     { "xmin", &parameters_laba1.xmin },
@@ -1441,6 +1611,20 @@ int main(int, char**) {
     { "dt",     &parameters_laba3.dt },
   };
 
+  Input_Float_Settings input_parameters_laba4[] = {
+    { "xmin",   &parameters_laba4.ymin }, // @Hack: those are inverted, because I'm noob
+    { "xmax",   &parameters_laba4.ymax },
+    { "ymin",   &parameters_laba4.xmin },
+    { "ymax",   &parameters_laba4.xmax },
+    { "Re",     &parameters_laba4.Re },
+    { "Ri",     &parameters_laba4.Ri },
+    { "Pu",     &parameters_laba4.Pu },
+    { "U0",     &parameters_laba4.U0 },
+    { "dx",     &parameters_laba4.dx }, // @Hack: those are NOT inverted, don't know why
+    { "dy",     &parameters_laba4.dy },
+    { "dt",     &parameters_laba4.dt },
+  };
+
 
   Method_Spec methods_laba1[] = {
     { non_conservative_lax_method, "Non Conservative Lax Method" },
@@ -1456,11 +1640,16 @@ int main(int, char**) {
     { method_2d, "2D Method" },
   };
 
-  The_Thing things[3];
+  Method_Spec methods_laba4[] = {
+    { another_cool_name_for_a_method, "Convection" },
+  };
+
+  The_Thing things[4];
 
   Thread_Data1 thread_data1 = { &parameters_laba1, &things[0].global_t, &things[0].dt };
   Thread_Data2 thread_data2 = { &parameters_laba2, &things[1].global_t, &things[1].dt };
   Thread_Data3 thread_data3 = { &parameters_laba3, &things[2].global_t, &things[2].dt };
+  Thread_Data4 thread_data4 = { &parameters_laba4, &things[3].global_t, &things[3].dt };
 
 
   { // init methods
@@ -1473,7 +1662,6 @@ int main(int, char**) {
     things[0].inputs_count  = array_size(input_parameters_laba1);
     things[0].methods       = methods_laba1;
     things[0].methods_count = array_size(methods_laba1);
-
 
     things[1].thread_proc = methods_laba2[0].proc;
     things[1].thread_parameter = &thread_data2;
@@ -1492,6 +1680,16 @@ int main(int, char**) {
     things[2].inputs_count  = array_size(input_parameters_laba3);
     things[2].methods       = methods_laba3;
     things[2].methods_count = array_size(methods_laba3);
+
+    things[3].thread_proc = methods_laba4[0].proc;
+    things[3].thread_parameter = &thread_data4;
+    things[3].name        = "Laba 4";
+    things[3].method_name = methods_laba4[0].name;
+    things[3].inputs        = input_parameters_laba4;
+    things[3].inputs_count  = array_size(input_parameters_laba4);
+    things[3].methods       = methods_laba4;
+    things[3].methods_count = array_size(methods_laba4);
+
 
     // init parameters
     parameters_laba1.xmin = -3.0f;
@@ -1530,8 +1728,22 @@ int main(int, char**) {
     parameters_laba3.dy = 0.1;
     parameters_laba3.dt = 0.05;
 
+    parameters_laba4.xmin = -6;
+    parameters_laba4.xmax =  6;
+    parameters_laba4.ymin = -10;
+    parameters_laba4.ymax = 10;
+    parameters_laba4.Re = 500;
+    parameters_laba4.Ri = 1;
+    parameters_laba4.Pu = 0;
+    parameters_laba4.U0 = 1;
+    parameters_laba4.dx = 0.05;
+    parameters_laba4.dy = 0.1;
+    parameters_laba4.dt = 0.05;
+
     result.data_mutex = create_mutex();
     lagrange.data_mutex = create_mutex();
+    result2d.data_mutex = create_mutex();
+    result3d.data_mutex = create_mutex();
   }
 
   Memory_Arena temporary_storage;
