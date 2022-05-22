@@ -803,18 +803,18 @@ static int method_2d(void* param) {
   size_t NUMBER_OF_POINTS_PER_LAYER = NUMBER_OF_POINTS_IN_X * NUMBER_OF_POINTS_IN_Y;
   size_t MAX_ALLOCATED_MEMORY = NUMBER_OF_POINTS_PER_LAYER * sizeof(Voxel2d);
 
+  printf("%zu x %zu\n", NUMBER_OF_POINTS_IN_X, NUMBER_OF_POINTS_IN_Y);
+
   size_t center_x_index = (center_x - xmin) / (xmax - xmin) * NUMBER_OF_POINTS_IN_X;
   size_t center_y_index = (center_y - ymin) / (ymax - ymin) * NUMBER_OF_POINTS_IN_Y;
 
   size_t width_index  = b_width  / dx;
   size_t height_index = b_height / dy;
 
-  size_t left   = center_x_index - width_index;
-  size_t right  = center_x_index + width_index;
-  size_t top    = center_y_index - height_index;;
-  size_t bottom = center_y_index + height_index;
-
-  // @Incomplete: x,y and i,j are inverted. How do I deal with that?
+  size_t left   = center_y_index - height_index / 2.0;
+  size_t right  = center_y_index + height_index / 2.0;
+  size_t top    = center_x_index - width_index / 2.0;
+  size_t bottom = center_x_index + width_index / 2.0;
 
   InterlockedExchange64((int64*)  data->dt,        *(int64*) &dt);
   InterlockedExchange64((int64*)  data->global_t,  *(int64*) &t); 
@@ -871,7 +871,7 @@ static int method_2d(void* param) {
 
         double eps = v_cur.eps - dt / dx * u * (1 - a) * (v_cur.eps - v_im1.eps) - dt / dx * a * u * (v_ip1.eps - v_cur.eps) - dt / dy * v * (1 - b) * (v_cur.eps - v_jm1.eps) - dt / dy * b * v * (v_jp1.eps - v_cur.eps) + dt / Re * ((v_ip1.eps - 2*v_cur.eps + v_im1.eps) / (dx*dx) + (v_jp1.eps - 2*v_cur.eps + v_jm1.eps) / (dy*dy)); 
 
-        if (i >= left && i <= right && j >= top && j <= bottom) {
+        if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
           temp_data[idx].eps = eps;
@@ -879,7 +879,7 @@ static int method_2d(void* param) {
       }
     }
 
-    for (size_t k = 0; k < 5; k++) { // @Incomplete: do something about this.
+    for (size_t k = 0; k < 1; k++) { // @Incomplete: do something about this.
       // 
       // One iteration by Jacobi.
       // 
@@ -896,7 +896,7 @@ static int method_2d(void* param) {
           double q   = (dx*dx) / (dy*dy);
           double psi = (v_ip1.psi + v_im1.psi + q*(v_jp1.psi + v_jm1.psi)) / (2.0 + 2.0*q) - dx*dx / (2.0 + 2.0*q) * v_cur.eps;
 
-          if (i >= left && i <= right && j >= top && j <= bottom) {
+          if (j >= left && j <= right && i >= top && i <= bottom) {
             continue;
           } else {
             temp_data[idx].psi = psi;
@@ -914,7 +914,7 @@ static int method_2d(void* param) {
 
         double u = (v_jp1.psi - v_cur.psi) / dy;
 
-        if (i >= left && i <= right && j >= top && j <= bottom) {
+        if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
           temp_data[idx].u = u;
@@ -931,7 +931,7 @@ static int method_2d(void* param) {
 
         double v = -(v_ip1.psi - v_cur.psi) / dx;
 
-        if (i >= left && i <= right && j >= top && j <= bottom) {
+        if (j >= left && j <= right && i >= top && i <= bottom) {
           continue;
         } else {
           temp_data[idx].v = v;
@@ -941,80 +941,93 @@ static int method_2d(void* param) {
 
     for (size_t i = 0; i < NUMBER_OF_POINTS_IN_X-1; i++) {
       size_t idx;
-      size_t jd1;
+      size_t id1;
 
       idx = i * NUMBER_OF_POINTS_IN_Y + 0; 
-      jd1 = i * NUMBER_OF_POINTS_IN_Y + 1;
+      id1 = i * NUMBER_OF_POINTS_IN_Y + 1;
 
-      auto r = temp_data.data;
-      temp_data[idx].eps = 2 * (r[jd1].psi - r[idx].psi - U0*dy) / (dy*dy);
-      temp_data[idx].psi = r[jd1].psi - U0*dy;
-      temp_data[idx].u   = U0;
-      temp_data[idx].v   = 0;
+      temp_data[idx].eps = temp_data[id1].eps;
+      temp_data[idx].psi = temp_data[id1].psi;
 
       idx = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-1); 
-      jd1 = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-2);
-      temp_data[idx].eps = 2.0 * (r[jd1].psi - r[idx].psi + U0*dy) / (dy*dy);
-      temp_data[idx].psi = r[jd1].psi + U0*dy;
-      temp_data[idx].u   = U0;
-      temp_data[idx].v   = 0;
+      id1 = i * NUMBER_OF_POINTS_IN_Y + (NUMBER_OF_POINTS_IN_Y-2);
+      temp_data[idx].eps = temp_data[id1].eps;
+      temp_data[idx].psi = temp_data[id1].psi;
     }
 
     for (size_t j = 0; j < NUMBER_OF_POINTS_IN_Y; j++) {
       size_t idx;
       size_t id1;
 
+      auto r = temp_data.data; 
       idx = 0 * NUMBER_OF_POINTS_IN_Y + j; 
       id1 = 1 * NUMBER_OF_POINTS_IN_Y + j;
-      temp_data[idx].eps = temp_data[id1].eps;
-      temp_data[idx].psi = temp_data[id1].psi;
+      temp_data[idx].eps = 2.0 * (r[id1].psi - r[idx].psi + U0*dy) / (dy*dy);
+      temp_data[idx].psi = r[id1].psi + U0*dy;
+      temp_data[idx].u   = U0;
+      temp_data[idx].v   = 0;
 
       idx = (NUMBER_OF_POINTS_IN_X-1) * NUMBER_OF_POINTS_IN_Y + j; 
       id1 = (NUMBER_OF_POINTS_IN_X-2) * NUMBER_OF_POINTS_IN_Y + j;
-      temp_data[idx].eps = temp_data[id1].eps;
-      temp_data[idx].psi = temp_data[id1].psi;
+      temp_data[idx].eps = 2 * (r[id1].psi - r[idx].psi - U0*dy) / (dy*dy);
+      temp_data[idx].psi = r[id1].psi - U0*dy;
+      temp_data[idx].u   = U0;
+      temp_data[idx].v   = 0;
     }
 
     for (size_t j = left; j <= right; j++) {
-      Voxel2d* jt = get_pointer(&result2d, &temp_data, j, top);
-      Voxel2d* jb = get_pointer(&result2d, &temp_data, j, bottom);
+      if (j >= NUMBER_OF_POINTS_IN_Y) { continue; }
 
-      jt->u   = 0;
-      jt->v   = 0;
-      jt->psi = 0;
-      jt->eps = 2.0 * get_data(&result2d, &temp_data, j, top-1).psi / (dy*dy);
+      Voxel2d* jt = get_pointer(&result2d, &temp_data, top, j);
+      Voxel2d* jb = get_pointer(&result2d, &temp_data, bottom, j);
 
-      jb->u   = 0;
-      jb->v   = 0;
-      jb->psi = 0;
-      jb->eps = 2.0 * get_data(&result2d, &temp_data, j, bottom+1).psi / (dy*dy);
+      if (top < NUMBER_OF_POINTS_IN_X) {
+        jt->u   = 0;
+        jt->v   = 0;
+        jt->psi = 0;
+        jt->eps = 2.0 * get_data(&result2d, &temp_data, top-1, j).psi / (dy*dy);
+      }
+
+      if (bottom < NUMBER_OF_POINTS_IN_X) {
+        jb->u   = 0;
+        jb->v   = 0;
+        jb->psi = 0;
+        jb->eps = 2.0 * get_data(&result2d, &temp_data, bottom+1, j).psi / (dy*dy);
+      }
     }
 
     for (size_t i = top; i <= bottom; i++) {
-      Voxel2d* il = get_pointer(&result2d, &temp_data, left,  i);
-      Voxel2d* ir = get_pointer(&result2d, &temp_data, right, i);
+      if (i >= NUMBER_OF_POINTS_IN_X) { continue; }
 
-      il->u   = 0;
-      il->v   = 0;
-      il->psi = 0;
-      il->eps = 2.0 * get_data(&result2d, &temp_data, left-1, i).psi / (dx*dx);;
+      Voxel2d* il = get_pointer(&result2d, &temp_data, i, left);
+      Voxel2d* ir = get_pointer(&result2d, &temp_data, i, right);
 
-      ir->u   = 0;
-      ir->v   = 0;
-      ir->psi = 0;
-      ir->eps = 2.0 * get_data(&result2d, &temp_data, right+1, i).psi / (dx*dx);
+      if (left < NUMBER_OF_POINTS_IN_Y) {
+        il->u   = 0;
+        il->v   = 0;
+        il->psi = 0;
+        il->eps = 2.0 * get_data(&result2d, &temp_data, i, left-1).psi / (dx*dx);;
+      }
+
+      if (right < NUMBER_OF_POINTS_IN_Y) {
+        ir->u   = 0;
+        ir->v   = 0;
+        ir->psi = 0;
+        ir->eps = 2.0 * get_data(&result2d, &temp_data, i, right+1).psi / (dx*dx);
+      }
     }
 
     {
-      get_pointer(&result2d, &temp_data, left, bottom)->eps  = 2.0 * get_pointer(&result2d, &temp_data, left, bottom+1)->psi / (dy*dy)
-                                                             + 2.0 * get_pointer(&result2d, &temp_data, left-1, bottom)->psi / (dx*dx);
-      get_pointer(&result2d, &temp_data, right, bottom)->eps = 2.0 * get_pointer(&result2d, &temp_data, right, bottom+1)->psi / (dy*dy)
-                                                             + 2.0 * get_pointer(&result2d, &temp_data, right+1, bottom)->psi / (dx*dx);
+      size_t Nx = NUMBER_OF_POINTS_IN_X, Ny = NUMBER_OF_POINTS_IN_Y;
+      if (bottom < Nx && left < Ny)  get_pointer(&result2d, &temp_data, bottom, left)->eps  = 2.0 * get_pointer(&result2d, &temp_data, bottom+1, left)->psi / (dy*dy)
+                                                                                           + 2.0 * get_pointer(&result2d, &temp_data, bottom, left-1)->psi / (dx*dx);
+      if (bottom < Nx && right < Ny) get_pointer(&result2d, &temp_data, bottom, right)->eps = 2.0 * get_pointer(&result2d, &temp_data, bottom+1, right)->psi / (dy*dy)
+                                                                                            + 2.0 * get_pointer(&result2d, &temp_data, bottom, right+1)->psi / (dx*dx);
 
-      get_pointer(&result2d, &temp_data, left, top)->eps  = 2.0 * get_pointer(&result2d, &temp_data, left, top-1)->psi / (dy*dy)
-                                                          + 2.0 * get_pointer(&result2d, &temp_data, left-1, top)->psi / (dx*dx);
-      get_pointer(&result2d, &temp_data, right, top)->eps = 2.0 * get_pointer(&result2d, &temp_data, right, top-1)->psi / (dy*dy)
-                                                          + 2.0 * get_pointer(&result2d, &temp_data, right+1, top)->psi / (dx*dx);
+      if (top < Nx && left < Ny)  get_pointer(&result2d, &temp_data, top, left)->eps  = 2.0 * get_pointer(&result2d, &temp_data, top-1, left)->psi / (dy*dy)
+                                                                                      + 2.0 * get_pointer(&result2d, &temp_data, top, left-1)->psi / (dx*dx);
+      if (top < Nx && right < Ny) get_pointer(&result2d, &temp_data, top, right)->eps = 2.0 * get_pointer(&result2d, &temp_data, top-1, right)->psi / (dy*dy)
+                                                                                      + 2.0 * get_pointer(&result2d, &temp_data, top, right+1)->psi / (dx*dx);
 
     }
 
@@ -1297,7 +1310,9 @@ void render_laba3(Memory_Arena* arena, The_Thing* thing) {
 
   ImPlot::PushColormap(map);
 
-  ImPlot::ColormapScale("##HeatScale", 0.0, 1.0, ImVec2(60,600));
+  const ImVec2 colormap_scale_size = ImVec2(60,   600);
+  const ImVec2 colormap_size       = ImVec2(1000, 600);
+  ImPlot::ColormapScale("##HeatScale", 0.0, 1.0, colormap_scale_size);
 
   ImGui::SameLine();
 
@@ -1335,7 +1350,7 @@ void render_laba3(Memory_Arena* arena, The_Thing* thing) {
     velocity[i] = sqrt(u*u + v*v);
   }
 
-  if (ImPlot::BeginPlot("##Heatmap2", ImVec2(600,600))) {
+  if (ImPlot::BeginPlot("##Heatmap2", colormap_size)) {
     ImPlot::SetupAxes(NULL, NULL, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
     ImPlot::PlotHeatmap("heat1", velocity.data, size_x, size_y, 0.0f, 1.0f, NULL);
     ImPlot::EndPlot();
@@ -1411,17 +1426,17 @@ int main(int, char**) {
   };
 
   Input_Float_Settings input_parameters_laba3[] = {
-    { "xmin",   &parameters_laba3.xmin },
-    { "xmax",   &parameters_laba3.xmax },
-    { "ymin",   &parameters_laba3.ymin },
-    { "ymax",   &parameters_laba3.ymax },
-    { "barrier center x", &parameters_laba3.center_x },
-    { "barrier center y", &parameters_laba3.center_y },
-    { "barrier width",  &parameters_laba3.a },
-    { "barrier height", &parameters_laba3.b },
+    { "xmin",   &parameters_laba3.ymin }, // @Hack: those are inverted, because I'm noob
+    { "xmax",   &parameters_laba3.ymax },
+    { "ymin",   &parameters_laba3.xmin },
+    { "ymax",   &parameters_laba3.xmax },
+    { "barrier center x", &parameters_laba3.center_y },
+    { "barrier center y", &parameters_laba3.center_x },
+    { "barrier width",  &parameters_laba3.b },
+    { "barrier height", &parameters_laba3.a },
     { "Re",     &parameters_laba3.Re },
     { "U0",     &parameters_laba3.U0 },
-    { "dx",     &parameters_laba3.dx },
+    { "dx",     &parameters_laba3.dx }, // @Hack: those are NOT inverted, don't know why
     { "dy",     &parameters_laba3.dy },
     { "dt",     &parameters_laba3.dt },
   };
@@ -1501,19 +1516,19 @@ int main(int, char**) {
     parameters_laba2.dt   = 0.0001f;
     parameters_laba2.dx   = 0.01f;
 
-    parameters_laba3.xmin = -3;
-    parameters_laba3.xmax =  3;
-    parameters_laba3.ymin = -3;
-    parameters_laba3.ymax =  3;
-    parameters_laba3.center_x = -1.5;
-    parameters_laba3.center_y = 0;
-    parameters_laba3.a = 0.2;
-    parameters_laba3.b = 0.2;
+    parameters_laba3.xmin = -6;
+    parameters_laba3.xmax =  6;
+    parameters_laba3.ymin = -10;
+    parameters_laba3.ymax = 10;
+    parameters_laba3.center_x = 0;
+    parameters_laba3.center_y = -7;
+    parameters_laba3.a = 0.5;
+    parameters_laba3.b = 0.5;
     parameters_laba3.Re = 500;
     parameters_laba3.U0 = 1;
     parameters_laba3.dx = 0.05;
-    parameters_laba3.dy = 0.05;
-    parameters_laba3.dt = 0.01;
+    parameters_laba3.dy = 0.1;
+    parameters_laba3.dt = 0.05;
 
     result.data_mutex = create_mutex();
     lagrange.data_mutex = create_mutex();
@@ -1630,12 +1645,20 @@ int main(int, char**) {
 
           ImGui::Text("%s%g", (thing->replay_multiplier >= 0) ? "x" : "/", pow(2.0, abs(thing->replay_multiplier)));
 
-          for (size_t i = 0; i < thing->methods_count; i++) {
-            Method_Spec* method = &thing->methods[i];
-            if (i != 0) { ImGui::SameLine(); }
-            if (ImGui::Button(method->name)) {
-              thing->thread_proc = method->proc;
-              thing->method_name = method->name;
+          if (thing->methods_count == 1) {
+            // 
+            // Will not draw buttons to switch a method.
+            // 
+            thing->thread_proc = thing->methods[0].proc;
+            thing->method_name = thing->methods[0].name;
+          } else {
+            for (size_t i = 0; i < thing->methods_count; i++) {
+              Method_Spec* method = &thing->methods[i];
+              if (i != 0) { ImGui::SameLine(); }
+              if (ImGui::Button(method->name)) {
+                thing->thread_proc = method->proc;
+                thing->method_name = method->name;
+              }
             }
           }
 
