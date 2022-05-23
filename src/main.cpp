@@ -1601,7 +1601,7 @@ void render_laba4(Memory_Arena* arena, The_Thing* thing) {
   ImPlotColormap map = ImPlotColormap_Plasma;
   ImPlot::PushColormap(map);
 
-  ImPlot::ColormapScale("##HeatScale", -10.0, 10.0, colormap_scale_size);
+  ImPlot::ColormapScale("##HeatScale", 0.0, 1.0, colormap_scale_size);
 
   ImGui::SameLine();
 
