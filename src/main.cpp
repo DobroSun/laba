@@ -2072,7 +2072,7 @@ int main(int, char**) {
     // init parameters from All.variables file.
     //
     init_variables_table(things, array_size(things));
-    //load_variables_table();
+    load_variables_table();
 
     result.data_mutex = create_mutex();
     lagrange.data_mutex = create_mutex();
