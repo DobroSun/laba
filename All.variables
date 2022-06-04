@@ -1,0 +1,51 @@
+
+:parameters_laba_1
+xmin -3.000000
+xmax 3.000000
+p0 1.000000
+x0 0.000000
+r0 0.500000
+ro0 1.000000
+gamma 1.670000
+dx 0.001000
+dt 0.000100
+
+:parameters_laba_2
+xmin -3.000000
+xmax 3.000000
+p0 1.000000
+x0 0.000000
+r0 0.500000
+ro0 1.000000
+gamma 1.670000
+alpha 1.000000
+a 2.300000
+dx 0.010000
+dt 0.000100
+
+:parameters_laba_3
+xmin -10.000000
+xmax 10.000000
+ymin -6.000000
+ymax 6.000000
+barrier_center_x -7.000000
+barrier_center_y 0.000000
+barrier_width 0.500000
+barrier_height 0.500000
+Re 500.000000
+U0 1.000000
+dx 0.050000
+dy 0.100000
+dt 0.050000
+
+:parameters_laba_4
+xmin -3.000000
+xmax 3.000000
+ymin -3.000000
+ymax 3.000000
+Re 500.000000
+Ri 10.000000
+Pe 500.000000
+dx 0.020000
+dy 0.020000
+dt 0.006000

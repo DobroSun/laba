@@ -14,9 +14,14 @@
 #include "../implot/implot_items.cpp"
 
 #include "../std/pch.h"
+#include <cctype>
+#include <string> // @Ugh:  std::string
 
 #include "threads_api.cpp"
+#include "filesystem_api.cpp"
+
 #include "threads_windows.cpp"
+#include "filesystem_windows.cpp"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -62,6 +67,31 @@ static ID3D11RenderTargetView*  g_mainRenderTargetView = NULL;
 #define square(x) ( (x)*(x) )
 #define abs(x)    ( (x>0) ? (x) : -(x) )
 #define array_size(x) ( sizeof(x)/sizeof(*(x)) )
+
+
+struct string {
+  const char* data;
+  size_t      size;
+};
+
+string read_entire_file(const char* filename) {
+  File file;
+  bool success = file_open(&file, filename);
+  if (!success) { return {}; }
+
+  defer { file_close(&file); };
+
+  size_t size = file_get_size(&file);
+  char*  data = (char*) malloc(size+1);
+  memset(data, 0, size+1);
+
+  size_t written = 0;
+  success = file_read(&file, data, size, &written);
+  if (!success)        { return {}; } // @LogError: @MemoryLeak: 
+  if (written != size) { return {}; } // @LogError: @MemoryLeak: 
+
+  return { data, size };
+}
 
 
 // 
@@ -148,6 +178,7 @@ struct Parameters_Laba4 {
   float dy;
   float dt;
 };
+
 
 
 struct Thread_Data1 {
@@ -1283,6 +1314,7 @@ struct The_Thing {
   const char* name = {};
   const char* method_name = {}; 
 
+  const char*           inputs_subfolder = NULL;
   Input_Float_Settings* inputs       = NULL;
   size_t                inputs_count = 0;
 
@@ -1301,6 +1333,219 @@ struct The_Thing {
   double global_t = 0;
   double dt = 0;
 };
+
+enum Variable_Tag {
+  TAG_NONE = 0,
+  TAG_INT,
+  TAG_FLOAT,
+};
+
+struct Variable_Info {
+  const char* subfolder;
+  const char* name;
+
+  void* pointer;
+  Variable_Tag tag;
+};
+
+struct Var {
+  string subfolder;
+  string name;
+
+  Variable_Tag tag;
+  union {
+    int   int_;
+    float float_;
+  };
+};
+
+static array<Variable_Info> variables_table;
+
+void init_variables_table(The_Thing* array_thing, size_t num) {
+  for (size_t i = 0; i < num; i++) {
+    const The_Thing* thing = &array_thing[i];
+
+    for (size_t j = 0; j < thing->inputs_count; j++) {
+      const Input_Float_Settings* set = &thing->inputs[j];
+
+      Variable_Info* it = array_add(&variables_table);
+      it->subfolder = thing->inputs_subfolder;
+      it->name      = set->name;
+      it->pointer   = set->pointer;
+      it->tag       = TAG_FLOAT;
+    }
+  }
+}
+
+bool compare_string(const char* a, const char* b) {
+  return strcmp(a, b) == 0;
+}
+
+bool compare_string(string a, const char* b) {
+  return a.size == strlen(b) && strncmp(a.data, b, a.size) == 0;
+}
+
+bool compare_string(const char* a, string b) {
+  return compare_string(b, a);
+}
+
+
+void attach_to_table(Var v) {
+  Variable_Info* target = array_find_by_predicate(&variables_table, [v](Variable_Info& info) {
+      return compare_string(info.subfolder, v.subfolder) && compare_string(info.name, v.name);
+  });
+
+  assert(target);               // @ReportError: we didn't find specified entry in a table!
+  assert(v.tag == target->tag); // @ReportError: parsed type is different from actual program type.
+  assert(v.tag != TAG_NONE);    // @ReportError: parsed non-specified type.
+
+  switch (v.tag) {
+  case TAG_INT:
+    *(int*) target->pointer = v.int_;
+    break;
+
+  case TAG_FLOAT:
+    *(float*) target->pointer = v.float_;
+    break;
+
+  default: break;
+  }
+}
+
+const char* eat_spaces(const char* c) {
+  while(1) {
+    bool space = *c == ' ' || *c == '\n' || *c == '\r' || *c == '\t' || *c == '\b';
+    if (*c == '\0') {
+      break;
+    }
+
+    if (space) {
+      c++;
+    } else {
+      break;
+    }
+  }
+  return c;
+}
+
+const char* eat_word(const char* c, const char** word, size_t* size) {
+  *word = c;
+  *size = 0;
+
+  if (isalpha(*c) || *c == '_') {
+    *size += 1;
+    c++;
+  } else {
+    goto done;
+  }
+
+  while (isalpha(*c) || isdigit(*c) || *c == '_') {
+    *size += 1;
+    c++;
+  }
+
+done:
+  return c;
+}
+
+const char* eat_variable(const char* c, Var* var) {
+  char* end;
+
+  var->tag    = TAG_FLOAT;
+  var->float_ = strtod(c, &end);
+  return end;
+}
+
+void load_variables_table() {
+
+  string source = read_entire_file("All.variables");
+  array<Var> hotloaded_variables_config;
+
+  defer { free((void*) source.data); };
+  defer { array_free(&hotloaded_variables_config); };
+
+  assert(source.data && source.size);
+  const char* cursor = source.data;
+
+  cursor = eat_spaces(cursor);
+
+parse_new_subfolder:
+  if (*cursor == ':') {
+    const char* subfolder;
+    size_t      subfolder_size;
+    cursor++;
+    cursor = eat_spaces(cursor);
+    cursor = eat_word(cursor, &subfolder, &subfolder_size);
+
+parse_new_variable:
+    const char* word;
+    size_t      size;
+
+    Var var;
+
+    cursor = eat_spaces(cursor);
+    cursor = eat_word(cursor, &word, &size);
+
+    cursor = eat_spaces(cursor);
+    cursor = eat_variable(cursor, &var);
+    cursor = eat_spaces(cursor);
+
+    var.subfolder = { subfolder, subfolder_size };
+    var.name      = { word, size };
+    // var.float_   are already filled up.
+    // var.tag      are already filled up.
+
+
+    array_add(&hotloaded_variables_config, var);
+
+    if (*cursor == '\0') {
+      goto done;
+    } else if (*cursor == ':') {
+      goto parse_new_subfolder;
+    } else {
+      goto parse_new_variable;
+    }
+  }
+
+done:
+  for (size_t i = 0; i < hotloaded_variables_config.size; i++) {
+    attach_to_table(hotloaded_variables_config[i]);
+  }
+}
+
+void save_variables_table() {
+
+  File file;
+  bool success = file_open(&file, "All.variables");
+  if (!success) return;
+
+  defer { file_close(&file); };
+
+  const char* current_subfolder = NULL;
+
+  for (size_t i = 0; i < variables_table.size; i++) {
+    Variable_Info* info = &variables_table[i];
+
+    if (current_subfolder != info->subfolder) {
+      current_subfolder = info->subfolder;
+
+      // 
+      // found new subfolder.
+      // 
+
+      file_write(&file, "\n:", 2);
+      file_write(&file, info->subfolder, strlen(info->subfolder));
+      file_write(&file, "\n", 1);
+    }
+
+    std::string s = std::to_string(*(float*) info->pointer); // @Ugh: 
+
+    file_write(&file, info->name, strlen(info->name));
+    file_write(&file, " ", 1);
+    file_write(&file, s.data(), s.size()); // @Ugh: ()
+    file_write(&file, "\n", 1);
+  }
+}
 
 void render_laba1(Memory_Arena* arena, The_Thing* thing) {
   if (thing->clear_the_thing) {
@@ -1681,6 +1926,8 @@ int main(int, char**) {
   bool done             = false;
 
   init_threads_api();
+  init_filesystem_api();
+
   check_threads_api();
 
   Parameters_Laba1 parameters_laba1 = {};
@@ -1719,10 +1966,10 @@ int main(int, char**) {
     { "xmax",   &parameters_laba3.ymax },
     { "ymin",   &parameters_laba3.xmin },
     { "ymax",   &parameters_laba3.xmax },
-    { "barrier center x", &parameters_laba3.center_y },
-    { "barrier center y", &parameters_laba3.center_x },
-    { "barrier width",  &parameters_laba3.b },
-    { "barrier height", &parameters_laba3.a },
+    { "barrier_center_x", &parameters_laba3.center_y },
+    { "barrier_center_y", &parameters_laba3.center_x },
+    { "barrier_width",  &parameters_laba3.b },
+    { "barrier_height", &parameters_laba3.a },
     { "Re",     &parameters_laba3.Re },
     { "U0",     &parameters_laba3.U0 },
     { "dx",     &parameters_laba3.dx }, // @Hack: those are NOT inverted, don't know why
@@ -1776,8 +2023,11 @@ int main(int, char**) {
     things[0].thread_parameter = &thread_data1;
     things[0].name = "Laba 1";
     things[0].method_name = methods_laba1[0].name;
-    things[0].inputs        = input_parameters_laba1;
-    things[0].inputs_count  = array_size(input_parameters_laba1);
+
+    things[0].inputs_subfolder = "parameters_laba_1";
+    things[0].inputs           = input_parameters_laba1;
+    things[0].inputs_count     = array_size(input_parameters_laba1);
+
     things[0].methods       = methods_laba1;
     things[0].methods_count = array_size(methods_laba1);
 
@@ -1785,8 +2035,11 @@ int main(int, char**) {
     things[1].thread_parameter = &thread_data2;
     things[1].name        = "Laba 2";
     things[1].method_name = methods_laba2[0].name;
+
+    things[1].inputs_subfolder = "parameters_laba_2";
     things[1].inputs        = input_parameters_laba2;
     things[1].inputs_count  = array_size(input_parameters_laba2);
+
     things[1].methods       = methods_laba2;
     things[1].methods_count = array_size(methods_laba2);
 
@@ -1794,8 +2047,11 @@ int main(int, char**) {
     things[2].thread_parameter = &thread_data3;
     things[2].name        = "Laba 3";
     things[2].method_name = methods_laba3[0].name;
+
+    things[2].inputs_subfolder = "parameters_laba_3";
     things[2].inputs        = input_parameters_laba3;
     things[2].inputs_count  = array_size(input_parameters_laba3);
+
     things[2].methods       = methods_laba3;
     things[2].methods_count = array_size(methods_laba3);
 
@@ -1803,59 +2059,20 @@ int main(int, char**) {
     things[3].thread_parameter = &thread_data4;
     things[3].name        = "Laba 4";
     things[3].method_name = methods_laba4[0].name;
+
+    things[3].inputs_subfolder = "parameters_laba_4";
     things[3].inputs        = input_parameters_laba4;
     things[3].inputs_count  = array_size(input_parameters_laba4);
+
     things[3].methods       = methods_laba4;
     things[3].methods_count = array_size(methods_laba4);
 
 
-    // init parameters
-    parameters_laba1.xmin = -3.0f;
-    parameters_laba1.xmax = 3.0f;
-    parameters_laba1.p0   = 1.0f;
-    parameters_laba1.x0   = 0.0f;
-    parameters_laba1.r0   = 0.5f;
-    parameters_laba1.ro0  = 1.0f;
-    parameters_laba1.gamma = 1.67f;
-    parameters_laba1.dt   = 0.0001f;
-    parameters_laba1.dx   = 0.01f;
-
-    parameters_laba2.xmin = -3.0f;
-    parameters_laba2.xmax = 3.0f;
-    parameters_laba2.p0   = 1.0f;
-    parameters_laba2.x0   = 0.0f;
-    parameters_laba2.r0   = 0.5f;
-    parameters_laba2.ro0  = 1.0f;
-    parameters_laba2.gamma = 1.67f;
-    parameters_laba2.alpha = 1;
-    parameters_laba2.a     = 2.3;
-    parameters_laba2.dt   = 0.0001f;
-    parameters_laba2.dx   = 0.01f;
-
-    parameters_laba3.xmin = -6;
-    parameters_laba3.xmax =  6;
-    parameters_laba3.ymin = -10;
-    parameters_laba3.ymax = 10;
-    parameters_laba3.center_x = 0;
-    parameters_laba3.center_y = -7;
-    parameters_laba3.a = 0.5;
-    parameters_laba3.b = 0.5;
-    parameters_laba3.Re = 500;
-    parameters_laba3.U0 = 1;
-    parameters_laba3.dx = 0.05;
-    parameters_laba3.dy = 0.1;
-    parameters_laba3.dt = 0.05;
-
-    parameters_laba4.xmin = -3;
-    parameters_laba4.xmax =  3;
-    parameters_laba4.ymin = -3;
-    parameters_laba4.ymax =  3;
-    parameters_laba4.Re = 500;
-    parameters_laba4.Ri = 10;
-    parameters_laba4.Pe = parameters_laba4.Re;
-    parameters_laba4.dx = 0.02;
-    parameters_laba4.dy = 0.02;
-    parameters_laba4.dt = 0.006;
+    // 
+    // init parameters from All.variables file.
+    //
+    init_variables_table(things, array_size(things));
+    //load_variables_table();
 
     result.data_mutex = create_mutex();
     lagrange.data_mutex = create_mutex();
@@ -1903,6 +2120,16 @@ int main(int, char**) {
             static const char* format    = "%g";
             static const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CharsScientific;
             ImGui::InputFloat(s->name, s->pointer, step, step_fast, format, flags);
+          }
+
+          if (ImGui::Button("Save Parameters To File")) {
+            save_variables_table();
+          }
+
+          ImGui::SameLine();
+
+          if (ImGui::Button("Load Parameters From File")) {
+            load_variables_table();
           }
 
           ImGui::SliderFloat("Time", &thing->time, 0, thing->global_t);
@@ -2033,6 +2260,7 @@ int main(int, char**) {
     //g_pSwapChain->Present(0, 0); // Present without vsync
   }
 
+  array_free(&variables_table);
   end_memory_arena(&temporary_storage);
 
   // Cleanup
